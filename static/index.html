@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Site Selector</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <style>
   :root {
     --bg: #f6f7f9;
@@ -20,6 +21,7 @@
     --warn-bg: #fff6e0;
     --warn-border: #f0c96b;
     --error-bg: #fdecec;
+    --pin: #0b0b0b;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -47,34 +49,42 @@
     color: var(--text);
     font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
-  main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+  main { max-width: 1000px; margin: 0 auto; padding: 20px 16px 48px; }
   h1 { font-size: 1.6rem; margin: 0 0 4px; }
-  .subtitle { color: var(--muted); margin: 0 0 20px; }
+  h2 { font-size: 1.05rem; margin: 0 0 10px; }
+  .subtitle { color: var(--muted); margin: 0 0 16px; }
 
   .card {
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: 12px;
-    padding: 18px;
+    padding: 16px;
     margin-bottom: 16px;
   }
+
+  /* Controls: business type on top, then two side-by-side tools (stacked on phones) */
+  .tools { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 14px; }
+  @media (min-width: 760px) { .tools { grid-template-columns: 1fr 1fr; } }
+  .tool { border-top: 1px solid var(--border); padding-top: 14px; }
+  @media (min-width: 760px) { .tool + .tool { border-left: 1px solid var(--border); padding-left: 16px; } }
+  .hint { color: var(--muted); font-size: 0.9rem; margin: 8px 0 0; }
 
   label { display: block; font-weight: 600; margin-bottom: 6px; }
   input, select {
     width: 100%;
     font: inherit;
-    padding: 12px;
+    padding: 11px;
     border: 1px solid var(--border);
     border-radius: 8px;
     background: var(--bg);
     color: var(--text);
-    margin-bottom: 14px;
+    margin-bottom: 10px;
   }
   button {
     width: 100%;
     font: inherit;
     font-weight: 600;
-    padding: 13px;
+    padding: 12px;
     border: none;
     border-radius: 8px;
     background: var(--accent);
@@ -83,22 +93,71 @@
   }
   button:disabled { opacity: 0.6; cursor: wait; }
 
-  .status { color: var(--muted); text-align: center; margin: 12px 0 0; min-height: 1.5em; }
+  /* Map */
+  .map-card { padding: 0; overflow: hidden; position: relative; }
+  #map { height: 60vh; min-height: 360px; background: var(--track); }
+  .map-loading {
+    position: absolute; inset: 0; z-index: 1000;
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    background: color-mix(in srgb, var(--card) 80%, transparent);
+    padding: 24px; font-weight: 600;
+  }
+  .legend {
+    background: var(--card); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; font-size: 0.8rem; line-height: 1.4;
+  }
+  .legend-title { font-weight: 600; margin-bottom: 4px; }
+  .legend-row { display: flex; align-items: center; gap: 6px; }
+  .swatch { width: 16px; height: 12px; border-radius: 2px; flex: none; }
+  .legend-note { color: var(--muted); margin-top: 4px; max-width: 170px; }
+  @media (max-width: 520px) {
+    .legend { font-size: 0.7rem; padding: 5px 7px; line-height: 1.3; }
+    .legend .swatch { width: 12px; height: 9px; }
+    .legend-note { display: none; }
+  }
+  .rank-pin {
+    width: 26px; height: 26px; border-radius: 50%;
+    background: var(--pin); color: #fff; border: 2px solid #fff;
+    display: flex; align-items: center; justify-content: center;
+    font: 700 13px/1 system-ui, sans-serif; box-shadow: 0 1px 4px rgba(0,0,0,.4);
+  }
+  .spot-pin {
+    width: 18px; height: 18px; border-radius: 50% 50% 50% 0;
+    background: var(--accent); border: 2px solid #fff; transform: rotate(-45deg);
+    box-shadow: 0 1px 4px rgba(0,0,0,.4);
+  }
+  .leaflet-popup-content { font: 14px/1.45 system-ui, sans-serif; margin: 10px 12px; }
+  .popup-score { font-size: 1.4rem; font-weight: 700; }
+  .popup-link { color: var(--accent); cursor: pointer; text-decoration: underline; background: none; border: none; padding: 0; width: auto; font: inherit; }
+
+  /* Suggestions list */
+  .suggestions { list-style: none; margin: 0; padding: 0; }
+  .suggestion {
+    display: flex; gap: 12px; align-items: flex-start;
+    padding: 10px 0; border-top: 1px solid var(--border); cursor: pointer;
+  }
+  .suggestion:first-child { border-top: none; }
+  .suggestion .rank-pin { flex: none; }
+  .suggestion-name { font-weight: 600; }
+  .suggestion-meta { color: var(--muted); font-size: 0.9rem; }
+  .suggestion-score { margin-left: auto; font-weight: 700; font-size: 1.1rem; }
+
+  .status { color: var(--muted); text-align: center; margin: 10px 0 0; min-height: 1.5em; }
   .error { background: var(--error-bg); border-color: var(--weak); }
   .warning { background: var(--warn-bg); border-color: var(--warn-border); font-size: 0.95rem; }
 
+  /* Site score result */
   .score-header { display: flex; align-items: center; gap: 16px; }
   .big-score { font-size: 3rem; font-weight: 700; line-height: 1; }
   .tier { font-weight: 700; font-size: 1.2rem; }
   .matched { color: var(--muted); font-size: 0.9rem; margin-top: 4px; word-break: break-word; }
-
   .bar-row { margin-top: 14px; }
-  .bar-label { display: flex; justify-content: space-between; font-size: 0.95rem; }
+  .bar-label { display: flex; justify-content: space-between; font-size: 0.95rem; gap: 8px; }
   .bar-label span:last-child { font-weight: 600; }
   .bar-weight { color: var(--muted); font-weight: 400; }
   .track { height: 10px; background: var(--track); border-radius: 5px; overflow: hidden; margin-top: 4px; }
   .fill { height: 100%; border-radius: 5px; }
-
   details { border-top: 1px solid var(--border); padding: 12px 0; }
   details:first-of-type { border-top: none; }
   summary { cursor: pointer; font-weight: 600; }
@@ -111,15 +170,11 @@
 <body>
 <main>
   <h1>Site Selector</h1>
-  <p class="subtitle">Score how well an address fits a small business, using live Census, map and traffic data.</p>
+  <p class="subtitle">Find where a small business fits best in Indiana, using live Census, map and traffic data.</p>
 
-  <form class="card" id="form">
-    <label for="address">Address</label>
-    <input id="address" name="address" required autocomplete="street-address"
-           placeholder="e.g. 200 E Washington St, Indianapolis, IN">
-
+  <div class="card">
     <label for="business">Business type</label>
-    <select id="business" name="business">
+    <select id="business">
       <option value="coffee_shop">Coffee shop</option>
       <option value="restaurant">Restaurant</option>
       <option value="salon">Salon / barber</option>
@@ -129,11 +184,41 @@
       <option value="doctor">Doctor (small practice)</option>
     </select>
 
-    <button type="submit" id="submit">Score this site</button>
+    <div class="tools">
+      <form class="tool" id="city-form">
+        <h2>1. Find the best areas in a city</h2>
+        <label for="city">City</label>
+        <select id="city"><option>Indianapolis</option></select>
+        <button type="submit" id="city-button">Show best areas</button>
+        <p class="hint">Colors every neighborhood on the map and marks the top 5.</p>
+      </form>
+
+      <form class="tool" id="address-form">
+        <h2>2. Score a specific spot</h2>
+        <label for="address">Address</label>
+        <input id="address" required autocomplete="street-address"
+               placeholder="e.g. 200 E Washington St, Indianapolis, IN">
+        <button type="submit" id="address-button">Score this address</button>
+        <p class="hint">Or tap anywhere on the map to score that spot.</p>
+      </form>
+    </div>
     <p class="status" id="status" aria-live="polite"></p>
-  </form>
+  </div>
 
   <div class="card error" id="error" hidden></div>
+
+  <div class="card map-card">
+    <div id="map" aria-label="Map of Indiana"></div>
+    <div class="map-loading" id="map-loading" hidden></div>
+  </div>
+
+  <div class="card" id="suggestions-card" hidden>
+    <h2 id="suggestions-title">Top areas</h2>
+    <ol class="suggestions" id="suggestions"></ol>
+    <p class="note">Neighborhood scores are estimates from Census data for the whole neighborhood and its ZIP code.
+      Tap a spot inside a neighborhood for a detailed score of that exact location.</p>
+  </div>
+
   <div id="warnings"></div>
 
   <section id="results" hidden>
@@ -147,13 +232,14 @@
       </div>
       <div id="bars"></div>
     </div>
-
     <div class="card" id="details"></div>
   </section>
 </main>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-  // Sub-scores, their weights in the Fit Score, and a plain-English meaning
+  // ---------- Shared helpers ----------
+
   const PARTS = [
     { key: "demand",      label: "Demand",            weight: "30%" },
     { key: "competition", label: "Competition",       weight: "25%", note: "higher = less competition" },
@@ -161,12 +247,13 @@
     { key: "land_use",    label: "Nearby businesses", weight: "20%" },
   ];
 
-  const form = document.getElementById("form");
-  const submitButton = document.getElementById("submit");
-  const statusText = document.getElementById("status");
-  const errorBox = document.getElementById("error");
-  const warningsBox = document.getElementById("warnings");
-  const results = document.getElementById("results");
+  // Heat map colors: one hue (blue), light = lower score, dark = higher
+  const HEAT_COLORS = ["#cde2fb", "#9ec5f4", "#5598e7", "#256abf", "#0d366b"];
+
+  const $ = (id) => document.getElementById(id);
+  const businessSelect = $("business");
+  const statusText = $("status");
+  const errorBox = $("error");
 
   function colorFor(score) {
     if (score >= 75) return "var(--strong)";
@@ -174,16 +261,195 @@
     return "var(--weak)";
   }
 
-  // Small helper to build elements safely (text is never treated as HTML)
+  // Builds elements safely (text is never treated as HTML)
   function el(tag, text, className) {
     const node = document.createElement(tag);
     if (text !== undefined && text !== null) node.textContent = text;
     if (className) node.className = className;
     return node;
   }
-
   function money(n) { return n == null ? "n/a" : "$" + n.toLocaleString(); }
-  function num(n) { return n == null ? "n/a" : n.toLocaleString(); }
+  function num(n) { return n == null ? "n/a" : Math.round(n).toLocaleString(); }
+  function businessLabel() { return businessSelect.options[businessSelect.selectedIndex].text; }
+
+  function showError(message) {
+    errorBox.textContent = message === "Failed to fetch"
+      ? "Couldn't reach the server. Check your connection and try again."
+      : message;
+    errorBox.hidden = false;
+  }
+  function clearError() { errorBox.hidden = true; }
+
+  async function api(url, options) {
+    const response = await fetch(url, options);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(typeof data.detail === "string" ? data.detail : "Something went wrong. Please try again.");
+    }
+    return data;
+  }
+
+  // ---------- Map setup ----------
+
+  const map = L.map("map", { zoomControl: true }).setView([39.85, -86.25], 7);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }).addTo(map);
+
+  let heatLayer = null;
+  let rankLayer = L.layerGroup().addTo(map);
+  let spotMarker = null;
+  let legendControl = null;
+
+  function setMapLoading(message) {
+    $("map-loading").textContent = message || "";
+    $("map-loading").hidden = !message;
+  }
+
+  // Splits scores into 5 equal-sized groups (quintiles) so the colors show
+  // which neighborhoods are best *within this city*.
+  function quintileBreaks(scores) {
+    const sorted = [...scores].sort((a, b) => a - b);
+    return [0.2, 0.4, 0.6, 0.8].map(q => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]);
+  }
+  function binFor(score, breaks) {
+    let bin = 0;
+    while (bin < breaks.length && score >= breaks[bin]) bin++;
+    return bin;
+  }
+
+  function showLegend(breaks, minScore, maxScore) {
+    if (legendControl) legendControl.remove();
+    legendControl = L.control({ position: "bottomright" });
+    legendControl.onAdd = () => {
+      const box = el("div", null, "legend");
+      box.appendChild(el("div", "Neighborhood score", "legend-title"));
+      const edges = [minScore, ...breaks, maxScore];
+      for (let i = HEAT_COLORS.length - 1; i >= 0; i--) {
+        const row = el("div", null, "legend-row");
+        const swatch = el("span", null, "swatch");
+        swatch.style.background = HEAT_COLORS[i];
+        row.appendChild(swatch);
+        row.appendChild(el("span", edges[i].toFixed(0) + "–" + edges[i + 1].toFixed(0) + (i === 4 ? " (top 20%)" : "")));
+        box.appendChild(row);
+      }
+      box.appendChild(el("div", "Numbered pins = top 5 suggestions", "legend-note"));
+      return box;
+    };
+    legendControl.addTo(map);
+  }
+
+  function rankIcon(rank) {
+    return L.divIcon({ className: "", html: '<div class="rank-pin">' + rank + "</div>", iconSize: [26, 26], iconAnchor: [13, 13] });
+  }
+
+  // ---------- 1. Best areas in a city ----------
+
+  async function loadCities() {
+    try {
+      const cities = await api("/cities");
+      const select = $("city");
+      select.replaceChildren(...cities.map(name => el("option", name)));
+      select.value = "Indianapolis";
+    } catch (err) {
+      // Keep the default option; the error will show if they try to use it
+    }
+  }
+
+  function breakdownText(b) {
+    return "Demand " + b.demand + " · Competition " + b.competition + " · Traffic " + b.traffic + " · Nearby businesses " + b.land_use;
+  }
+
+  function showCityScores(data) {
+    if (heatLayer) heatLayer.remove();
+    rankLayer.clearLayers();
+
+    const scores = data.features.map(f => f.properties.fit_score);
+    const breaks = quintileBreaks(scores);
+    const suggestedNames = new Set(data.suggestions.map(s => s.name));
+
+    heatLayer = L.geoJSON(data, {
+      style: (feature) => {
+        const suggested = suggestedNames.has(feature.properties.name);
+        return {
+          fillColor: HEAT_COLORS[binFor(feature.properties.fit_score, breaks)],
+          fillOpacity: 0.62,
+          color: suggested ? "#0b0b0b" : "#ffffff",
+          weight: suggested ? 2.5 : 0.8,
+        };
+      },
+      onEachFeature: (feature, layer) => {
+        const p = feature.properties;
+        layer.bindTooltip(p.name.replace("Census Tract", "Neighborhood") + ": " + p.fit_score, { sticky: true });
+        // (Tapping a neighborhood passes through to the map's click handler,
+        // which scores the exact spot tapped.)
+        layer.on("mouseover", () => layer.setStyle({ weight: 3, color: "#0b0b0b" }));
+        layer.on("mouseout", () => heatLayer.resetStyle(layer));
+      },
+    }).addTo(map);
+    map.fitBounds(heatLayer.getBounds(), { padding: [10, 10] });
+    showLegend(breaks, Math.min(...scores), Math.max(...scores));
+
+    // Numbered pins + the list below the map
+    const list = $("suggestions");
+    list.replaceChildren();
+    data.suggestions.forEach(s => {
+      const marker = L.marker([s.lat, s.lon], { icon: rankIcon(s.rank), keyboard: false, zIndexOffset: 1000 });
+      const popup = el("div");
+      popup.appendChild(el("div", "#" + s.rank + " " + s.name.replace("Census Tract", "Neighborhood")));
+      popup.appendChild(el("div", s.fit_score, "popup-score"));
+      popup.appendChild(el("div", breakdownText(s.breakdown)));
+      if (s.busiest_road) popup.appendChild(el("div", "Busiest road: " + s.busiest_road.road + " (" + num(s.busiest_road.vehicles_per_day) + "/day)"));
+      const scoreHere = el("button", "Score this spot in detail", "popup-link");
+      scoreHere.addEventListener("click", () => scoreSpot(s.lat, s.lon));
+      popup.appendChild(scoreHere);
+      marker.bindPopup(popup);
+      rankLayer.addLayer(marker);
+
+      const item = el("li", null, "suggestion");
+      const pin = el("div", String(s.rank), "rank-pin");
+      const text = el("div");
+      text.appendChild(el("div", s.name.replace("Census Tract", "Neighborhood"), "suggestion-name"));
+      text.appendChild(el("div", breakdownText(s.breakdown), "suggestion-meta"));
+      if (s.busiest_road) text.appendChild(el("div", "Near " + s.busiest_road.road + " (" + num(s.busiest_road.vehicles_per_day) + " vehicles/day)", "suggestion-meta"));
+      item.appendChild(pin);
+      item.appendChild(text);
+      item.appendChild(el("div", s.fit_score, "suggestion-score"));
+      item.addEventListener("click", () => {
+        map.setView([s.lat, s.lon], 14);
+        marker.openPopup();
+        $("map").scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+      list.appendChild(item);
+    });
+    $("suggestions-title").textContent = "Top areas for a " + businessLabel().toLowerCase() + " in " + data.city;
+    $("suggestions-card").hidden = data.suggestions.length === 0;
+  }
+
+  $("city-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    clearError();
+    const city = $("city").value;
+    $("city-button").disabled = true;
+    setMapLoading("Scoring every neighborhood in " + city + "… the first time for a city can take up to a minute.");
+    try {
+      const params = new URLSearchParams({ city, business_type: businessSelect.value });
+      showCityScores(await api("/area_scores?" + params));
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      $("city-button").disabled = false;
+      setMapLoading(null);
+    }
+  });
+
+  // Re-color the map when the business type changes (fast once a city is loaded)
+  businessSelect.addEventListener("change", () => {
+    if (heatLayer) $("city-form").requestSubmit();
+  });
+
+  // ---------- 2. Score one spot (address or map tap) ----------
 
   function detailSection(title, items, note) {
     const section = el("details");
@@ -195,14 +461,14 @@
     return section;
   }
 
-  function showResults(data) {
-    document.getElementById("fit-score").textContent = data.fit_score;
-    document.getElementById("fit-score").style.color = colorFor(data.fit_score);
-    document.getElementById("tier").textContent = data.tier;
-    document.getElementById("tier").style.color = colorFor(data.fit_score);
-    document.getElementById("matched").textContent = data.matched_address;
+  function showSiteResult(data) {
+    $("fit-score").textContent = data.fit_score;
+    $("fit-score").style.color = colorFor(data.fit_score);
+    $("tier").textContent = data.tier;
+    $("tier").style.color = colorFor(data.fit_score);
+    $("matched").textContent = data.matched_address + " · " + businessLabel();
 
-    const bars = document.getElementById("bars");
+    const bars = $("bars");
     bars.replaceChildren();
     PARTS.forEach(part => {
       const score = data.breakdown[part.key];
@@ -222,7 +488,7 @@
       bars.appendChild(row);
     });
 
-    const details = document.getElementById("details");
+    const details = $("details");
     details.replaceChildren();
 
     const d = data.demand_details;
@@ -230,7 +496,7 @@
       num(d.people_per_sq_mile) + " residents per square mile",
       "Median household income " + money(d.tract_median_income) + " (county: " + money(d.county_median_income) + ")",
       "Signals (0 to 100): density " + d.signals.density + ", income " + d.signals.income +
-        ", ages 20â€“39 " + d.signals.young + ", ages 65+ " + d.signals.seniors,
+        ", ages 20–39 " + d.signals.young + ", ages 65+ " + d.signals.seniors,
     ], "Based on Census data for this neighborhood (tract " + data.census_tract + ") compared with the county."));
 
     const c = data.competition_details;
@@ -251,60 +517,96 @@
       trafficLines.push("Street at site: " + t.frontage_based_on.reason);
     }
     t.busiest_roads_nearby.forEach(r => trafficLines.push("Nearby: " + r.road + ", " + num(r.vehicles_per_day) + " vehicles/day"));
-    details.appendChild(detailSection("Traffic & access", trafficLines,
-      "2024 federal traffic counts. Highways are not counted."));
+    details.appendChild(detailSection("Traffic & access", trafficLines, "2024 federal traffic counts. Highways are not counted."));
 
     const counts = data.land_use_details.complementary_places_nearby;
     const landLines = Object.keys(counts).length
       ? Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, v]) => v + " " + k.replace("_", " "))
-      : ["None found on the map nearby"];
+      : ["See the note below"];
     details.appendChild(detailSection("Nearby businesses that bring customers", landLines,
-      "From OpenStreetMap."));
+      Object.keys(counts).length ? "From OpenStreetMap." : "No OpenStreetMap list for this spot; the score uses Census ZIP code estimates."));
 
-    results.hidden = false;
-  }
-
-  function showWarnings(list) {
+    const warningsBox = $("warnings");
     warningsBox.replaceChildren();
-    (list || []).forEach(text => warningsBox.appendChild(el("div", text, "card warning")));
+    (data.warnings || []).forEach(text => warningsBox.appendChild(el("div", text, "card warning")));
+
+    $("results").hidden = false;
   }
 
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    errorBox.hidden = true;
-    results.hidden = true;
-    showWarnings([]);
-    submitButton.disabled = true;
-    statusText.textContent = "Pulling Census, map and traffic data. The first search for an address can take up to a minuteâ€¦";
+  function placeSpotMarker(lat, lon, popupContent) {
+    if (spotMarker) spotMarker.remove();
+    spotMarker = L.marker([lat, lon], {
+      icon: L.divIcon({ className: "", html: '<div class="spot-pin"></div>', iconSize: [18, 18], iconAnchor: [9, 18] }),
+      zIndexOffset: 2000,
+    }).addTo(map);
+    spotMarker.bindPopup(popupContent).openPopup();
+  }
 
+  let spotRequest = 0; // ignore answers to older taps if the user taps again
+
+  async function scoreSpot(lat, lon) {
+    clearError();
+    const requestId = ++spotRequest;
+    placeSpotMarker(lat, lon, el("div", "Scoring this spot…"));
+    statusText.textContent = "Scoring this spot… this can take up to 30 seconds.";
     try {
-      const response = await fetch("/score", {
+      const data = await api("/score_point", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          address: document.getElementById("address").value,
-          business_type: document.getElementById("business").value,
-        }),
+        body: JSON.stringify({ lat, lon, business_type: businessSelect.value }),
       });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const detail = typeof data.detail === "string" ? data.detail : "Something went wrong. Please try again.";
-        throw new Error(detail);
-      }
-      showWarnings(data.warnings);
-      showResults(data);
+      if (requestId !== spotRequest) return;
+      showSiteResult(data);
+      const popup = el("div");
+      popup.appendChild(el("div", businessLabel() + " here:"));
+      const score = el("div", data.fit_score + " · " + data.tier, "popup-score");
+      score.style.color = colorFor(data.fit_score);
+      popup.appendChild(score);
+      const more = el("button", "See the full breakdown", "popup-link");
+      more.addEventListener("click", () => $("results").scrollIntoView({ behavior: "smooth" }));
+      popup.appendChild(more);
+      placeSpotMarker(lat, lon, popup);
       statusText.textContent = "";
-      results.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (err) {
-      errorBox.textContent = err.message === "Failed to fetch"
-        ? "Couldn't reach the server. Check your connection and try again."
-        : err.message;
-      errorBox.hidden = false;
+      if (requestId !== spotRequest) return;
+      if (spotMarker) spotMarker.remove();
+      showError(err.message);
+      statusText.textContent = "";
+    }
+  }
+
+  map.on("click", (event) => scoreSpot(event.latlng.lat, event.latlng.lng));
+
+  $("address-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    clearError();
+    $("address-button").disabled = true;
+    statusText.textContent = "Pulling Census, map and traffic data. This can take up to 30 seconds…";
+    try {
+      const data = await api("/score", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address: $("address").value, business_type: businessSelect.value }),
+      });
+      showSiteResult(data);
+      const popup = el("div");
+      popup.appendChild(el("div", data.matched_address));
+      const score = el("div", data.fit_score + " · " + data.tier, "popup-score");
+      score.style.color = colorFor(data.fit_score);
+      popup.appendChild(score);
+      placeSpotMarker(data.lat, data.lon, popup);
+      map.setView([data.lat, data.lon], Math.max(map.getZoom(), 14));
+      statusText.textContent = "";
+      $("results").scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (err) {
+      showError(err.message);
       statusText.textContent = "";
     } finally {
-      submitButton.disabled = false;
+      $("address-button").disabled = false;
     }
   });
+
+  loadCities();
 </script>
 </body>
 </html>

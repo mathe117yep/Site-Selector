@@ -1,0 +1,5 @@
+# Python's cache of compiled files - rebuilt automatically, never needed on GitHub
+__pycache__/
+
+# Local settings for Claude (test server config), not part of the app
+.claude/

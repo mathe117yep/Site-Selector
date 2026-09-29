@@ -330,6 +330,99 @@ def calculate_traffic_score(site_street, frontage_roads, setback_roads, access_r
     }
 
 
+# --- Area (neighborhood) scoring for the map's heat map ---
+#
+# Scoring a whole city address-by-address would take far too long, so the
+# heat map scores each census tract ("neighborhood") from data we can pull
+# for the whole city at once:
+#   Demand       - the tract's own Census demographics (same as a site score)
+#   Competition  - Census business counts for the ZIP the tract sits in
+#   Land Use     - the same ZIP counts, for businesses that bring customers
+#   Traffic      - the busiest regular road near the tract's center
+# ZIP counts are complete everywhere (unlike OpenStreetMap), but they're
+# spread evenly over the ZIP, so they can't tell one block from the next.
+# That's fine for "which neighborhoods to look at"; clicking a spot on the
+# map then gives the detailed site score.
+
+AREA_TRAFFIC_RADIUS = 800  # meters, about half a mile from the tract's center
+
+# Industry codes for each "helpful neighbor" category in COMPLEMENT_WEIGHTS.
+# "retail" is special: all stores (44-45) minus clothing and pharmacies,
+# which are counted separately.
+CATEGORY_NAICS = {
+    "office": ("52", "54", "55"),              # finance, professional services, company offices
+    "college": ("611310",),
+    "school": ("611110",),
+    "library": ("519120",),
+    "gym": ("713940",),
+    "hotel": ("721110",),
+    "clothing": ("448",),
+    "entertainment": ("512131", "7111"),       # movie theaters, performing arts
+    "bar": ("722410",),
+    "cafe": ("722515",),
+    "restaurant": ("722511", "722513"),
+    "salon": ("812111", "812112", "812113"),
+    "pharmacy": ("446110",),
+    "hospital": ("622",),
+    "other_medical": ("6212", "6213", "6214"),  # dentists, therapists, outpatient centers
+    "park": (),                                 # parks aren't businesses, so no count here
+}
+ALL_RETAIL = "44-45"
+
+# Every industry code the area scores need, for one Census request
+AREA_NAICS = tuple(sorted(
+    {code for codes in CATEGORY_NAICS.values() for code in codes}
+    | {code for codes in COMPETITOR_NAICS.values() for code in codes}
+    | {ALL_RETAIL}
+))
+
+
+def _zip_category_count(category, zip_counts):
+    if category == "retail":
+        other_stores = sum(zip_counts.get(code, 0) for code in CATEGORY_NAICS["clothing"] + CATEGORY_NAICS["pharmacy"])
+        return max(0, zip_counts.get(ALL_RETAIL, 0) - other_stores)
+    return sum(zip_counts.get(code, 0) for code in CATEGORY_NAICS[category])
+
+
+def calculate_area_land_use_score(business_type, zip_counts, zip_land_sq_miles):
+    """Land Use from ZIP counts: like calculate_land_use_score, but estimated."""
+    total = 0.0
+    for category, weight in COMPLEMENT_WEIGHTS[business_type].items():
+        estimate = estimate_competitors_from_zip(
+            business_type, _zip_category_count(category, zip_counts), zip_land_sq_miles
+        ) or 0
+        # Spread evenly over the search circle, average closeness is 1/3
+        total += weight * estimate / 3
+    return round(100 * total / (total + LAND_USE_HALF_POINT), 1)
+
+
+def calculate_area_traffic_score(roads):
+    """roads: pipeline.get_nearby_roads result for AREA_TRAFFIC_RADIUS, busiest first."""
+    return round(_vehicles_to_score(roads[0]["vehicles_per_day"]) if roads else 0.0, 1)
+
+
+def calculate_area_scores(business_type, tract, county, tract_land_sq_miles,
+                          zip_counts, zip_land_sq_miles, roads):
+    """
+    All four sub-scores plus the overall score for one neighborhood.
+    zip_counts is None if we couldn't tell which ZIP the tract is in; then
+    Competition and Land Use fall back to a neutral 50.
+    """
+    demand = calculate_demand_score(business_type, tract, county, tract_land_sq_miles)["demand"]
+
+    if zip_counts is None:
+        competition, land_use = 50.0, 50.0
+    else:
+        competitor_count = sum(zip_counts.get(code, 0) for code in COMPETITOR_NAICS[business_type])
+        competition = calculate_competition_score(
+            business_type, [], competitor_count, zip_land_sq_miles
+        )["competition"]
+        land_use = calculate_area_land_use_score(business_type, zip_counts, zip_land_sq_miles)
+
+    traffic = calculate_area_traffic_score(roads)
+    return calculate_fit_score(demand, competition, traffic, land_use)
+
+
 def calculate_fit_score(demand, competition, traffic, land_use):
     """
     Calculates the composite Fit Score for a candidate site, using the
