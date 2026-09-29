@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Site Selector</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --text: #1d2330;
+    --muted: #5d6677;
+    --border: #dfe3ea;
+    --accent: #2f5bd3;
+    --accent-text: #ffffff;
+    --strong: #1f8a4c;
+    --moderate: #b7791f;
+    --weak: #c53030;
+    --track: #e9ecf1;
+    --warn-bg: #fff6e0;
+    --warn-border: #f0c96b;
+    --error-bg: #fdecec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b;
+      --card: #1b1f27;
+      --text: #e7eaf0;
+      --muted: #9aa3b2;
+      --border: #2c323d;
+      --accent: #6d8ff0;
+      --accent-text: #0e1320;
+      --strong: #4cc38a;
+      --moderate: #e2b44f;
+      --weak: #f07171;
+      --track: #2a303b;
+      --warn-bg: #2d2615;
+      --warn-border: #7a6124;
+      --error-bg: #3a1e1e;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); margin: 0 0 20px; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+    margin-bottom: 16px;
+  }
+
+  label { display: block; font-weight: 600; margin-bottom: 6px; }
+  input, select {
+    width: 100%;
+    font: inherit;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    margin-bottom: 14px;
+  }
+  button {
+    width: 100%;
+    font: inherit;
+    font-weight: 600;
+    padding: 13px;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--accent-text);
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.6; cursor: wait; }
+
+  .status { color: var(--muted); text-align: center; margin: 12px 0 0; min-height: 1.5em; }
+  .error { background: var(--error-bg); border-color: var(--weak); }
+  .warning { background: var(--warn-bg); border-color: var(--warn-border); font-size: 0.95rem; }
+
+  .score-header { display: flex; align-items: center; gap: 16px; }
+  .big-score { font-size: 3rem; font-weight: 700; line-height: 1; }
+  .tier { font-weight: 700; font-size: 1.2rem; }
+  .matched { color: var(--muted); font-size: 0.9rem; margin-top: 4px; word-break: break-word; }
+
+  .bar-row { margin-top: 14px; }
+  .bar-label { display: flex; justify-content: space-between; font-size: 0.95rem; }
+  .bar-label span:last-child { font-weight: 600; }
+  .bar-weight { color: var(--muted); font-weight: 400; }
+  .track { height: 10px; background: var(--track); border-radius: 5px; overflow: hidden; margin-top: 4px; }
+  .fill { height: 100%; border-radius: 5px; }
+
+  details { border-top: 1px solid var(--border); padding: 12px 0; }
+  details:first-of-type { border-top: none; }
+  summary { cursor: pointer; font-weight: 600; }
+  details ul { margin: 8px 0 0; padding-left: 20px; }
+  details li { margin: 2px 0; }
+  .note { color: var(--muted); font-size: 0.9rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Site Selector</h1>
+  <p class="subtitle">Score how well an address fits a small business, using live Census, map and traffic data.</p>
+
+  <form class="card" id="form">
+    <label for="address">Address</label>
+    <input id="address" name="address" required autocomplete="street-address"
+           placeholder="e.g. 200 E Washington St, Indianapolis, IN">
+
+    <label for="business">Business type</label>
+    <select id="business" name="business">
+      <option value="coffee_shop">Coffee shop</option>
+      <option value="restaurant">Restaurant</option>
+      <option value="salon">Salon / barber</option>
+      <option value="boutique">Boutique</option>
+      <option value="gym">Gym</option>
+      <option value="personal_trainer">Personal trainer</option>
+      <option value="doctor">Doctor (small practice)</option>
+    </select>
+
+    <button type="submit" id="submit">Score this site</button>
+    <p class="status" id="status" aria-live="polite"></p>
+  </form>
+
+  <div class="card error" id="error" hidden></div>
+  <div id="warnings"></div>
+
+  <section id="results" hidden>
+    <div class="card">
+      <div class="score-header">
+        <div class="big-score" id="fit-score"></div>
+        <div>
+          <div class="tier" id="tier"></div>
+          <div class="matched" id="matched"></div>
+        </div>
+      </div>
+      <div id="bars"></div>
+    </div>
+
+    <div class="card" id="details"></div>
+  </section>
+</main>
+
+<script>
+  // Sub-scores, their weights in the Fit Score, and a plain-English meaning
+  const PARTS = [
+    { key: "demand",      label: "Demand",            weight: "30%" },
+    { key: "competition", label: "Competition",       weight: "25%", note: "higher = less competition" },
+    { key: "traffic",     label: "Traffic & access",  weight: "25%" },
+    { key: "land_use",    label: "Nearby businesses", weight: "20%" },
+  ];
+
+  const form = document.getElementById("form");
+  const submitButton = document.getElementById("submit");
+  const statusText = document.getElementById("status");
+  const errorBox = document.getElementById("error");
+  const warningsBox = document.getElementById("warnings");
+  const results = document.getElementById("results");
+
+  function colorFor(score) {
+    if (score >= 75) return "var(--strong)";
+    if (score >= 50) return "var(--moderate)";
+    return "var(--weak)";
+  }
+
+  // Small helper to build elements safely (text is never treated as HTML)
+  function el(tag, text, className) {
+    const node = document.createElement(tag);
+    if (text !== undefined && text !== null) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function money(n) { return n == null ? "n/a" : "$" + n.toLocaleString(); }
+  function num(n) { return n == null ? "n/a" : n.toLocaleString(); }
+
+  function detailSection(title, items, note) {
+    const section = el("details");
+    section.appendChild(el("summary", title));
+    const list = el("ul");
+    items.forEach(text => list.appendChild(el("li", text)));
+    section.appendChild(list);
+    if (note) section.appendChild(el("p", note, "note"));
+    return section;
+  }
+
+  function showResults(data) {
+    document.getElementById("fit-score").textContent = data.fit_score;
+    document.getElementById("fit-score").style.color = colorFor(data.fit_score);
+    document.getElementById("tier").textContent = data.tier;
+    document.getElementById("tier").style.color = colorFor(data.fit_score);
+    document.getElementById("matched").textContent = data.matched_address;
+
+    const bars = document.getElementById("bars");
+    bars.replaceChildren();
+    PARTS.forEach(part => {
+      const score = data.breakdown[part.key];
+      const row = el("div", null, "bar-row");
+      const label = el("div", null, "bar-label");
+      const name = el("span", part.label + " ");
+      name.appendChild(el("span", "(" + part.weight + (part.note ? ", " + part.note : "") + ")", "bar-weight"));
+      label.appendChild(name);
+      label.appendChild(el("span", score));
+      const track = el("div", null, "track");
+      const fill = el("div", null, "fill");
+      fill.style.width = Math.max(0, Math.min(100, score)) + "%";
+      fill.style.background = colorFor(score);
+      track.appendChild(fill);
+      row.appendChild(label);
+      row.appendChild(track);
+      bars.appendChild(row);
+    });
+
+    const details = document.getElementById("details");
+    details.replaceChildren();
+
+    const d = data.demand_details;
+    details.appendChild(detailSection("Demand: who lives here", [
+      num(d.people_per_sq_mile) + " residents per square mile",
+      "Median household income " + money(d.tract_median_income) + " (county: " + money(d.county_median_income) + ")",
+      "Signals (0 to 100): density " + d.signals.density + ", income " + d.signals.income +
+        ", ages 20â€“39 " + d.signals.young + ", ages 65+ " + d.signals.seniors,
+    ], "Based on Census data for this neighborhood (tract " + data.census_tract + ") compared with the county."));
+
+    const c = data.competition_details;
+    const competitorLines = c.nearest_competitors.length
+      ? c.nearest_competitors.map(p => p.name + " (" + p.distance_miles + " mi)")
+      : ["No competitors found on the map nearby"];
+    competitorLines.push("Census count in ZIP " + c.zip_code + ": " + num(c.census_competitors_in_zip) +
+                         " (about " + num(c.census_estimate_in_radius) + " within the search area)");
+    details.appendChild(detailSection("Competition: similar businesses nearby", competitorLines,
+      "Score based on: " + c.score_based_on + "."));
+
+    const t = data.traffic_details;
+    const trafficLines = [];
+    if (t.frontage_based_on.road) {
+      trafficLines.push("Street at site: " + t.frontage_based_on.road.road + ", " +
+                        num(t.frontage_based_on.road.vehicles_per_day) + " vehicles/day (" + t.frontage_based_on.reason + ")");
+    } else {
+      trafficLines.push("Street at site: " + t.frontage_based_on.reason);
+    }
+    t.busiest_roads_nearby.forEach(r => trafficLines.push("Nearby: " + r.road + ", " + num(r.vehicles_per_day) + " vehicles/day"));
+    details.appendChild(detailSection("Traffic & access", trafficLines,
+      "2024 federal traffic counts. Highways are not counted."));
+
+    const counts = data.land_use_details.complementary_places_nearby;
+    const landLines = Object.keys(counts).length
+      ? Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, v]) => v + " " + k.replace("_", " "))
+      : ["None found on the map nearby"];
+    details.appendChild(detailSection("Nearby businesses that bring customers", landLines,
+      "From OpenStreetMap."));
+
+    results.hidden = false;
+  }
+
+  function showWarnings(list) {
+    warningsBox.replaceChildren();
+    (list || []).forEach(text => warningsBox.appendChild(el("div", text, "card warning")));
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    errorBox.hidden = true;
+    results.hidden = true;
+    showWarnings([]);
+    submitButton.disabled = true;
+    statusText.textContent = "Pulling Census, map and traffic data. The first search for an address can take up to a minuteâ€¦";
+
+    try {
+      const response = await fetch("/score", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          address: document.getElementById("address").value,
+          business_type: document.getElementById("business").value,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = typeof data.detail === "string" ? data.detail : "Something went wrong. Please try again.";
+        throw new Error(detail);
+      }
+      showWarnings(data.warnings);
+      showResults(data);
+      statusText.textContent = "";
+      results.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (err) {
+      errorBox.textContent = err.message === "Failed to fetch"
+        ? "Couldn't reach the server. Check your connection and try again."
+        : err.message;
+      errorBox.hidden = false;
+      statusText.textContent = "";
+    } finally {
+      submitButton.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
