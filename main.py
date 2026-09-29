@@ -41,8 +41,10 @@ class PointScoreRequest(BaseModel):
 
 @app.get("/")
 def home_page():
-    # The web interface (a single page in the static folder)
-    return FileResponse(STATIC_FOLDER / "index.html")
+    # The web interface (a single page in the static folder). "no-cache"
+    # makes browsers check for a newer version every time, so people see
+    # updates right away instead of an old saved copy.
+    return FileResponse(STATIC_FOLDER / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/health")
