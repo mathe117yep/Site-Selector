@@ -142,12 +142,14 @@ def score_location(location, business_type):
     except requests.RequestException:
         raise HTTPException(status_code=503, detail="A Census or traffic data service didn't respond. Please try again in a minute.")
 
-    # Nearby places from OpenStreetMap. Its free servers are often busy; if
-    # so, fall back to Census ZIP code estimates instead of failing.
+    # Nearby places (OpenStreetMap data, via Geoapify or the public
+    # servers). If every source fails, fall back to Census ZIP code
+    # estimates instead of failing.
     try:
-        places = get_nearby_places(location["lat"], location["lon"], ONE_MILE)
+        nearby = get_nearby_places(location["lat"], location["lon"], ONE_MILE)
+        places, places_source = nearby["places"], nearby["source"]
     except RuntimeError:
-        places = None
+        places, places_source = None, "Census ZIP code estimate"
 
     # Turn the raw data into 0-100 sub-scores
     demand_result = calculate_demand_score(business_type, tract, county, location["tract_land_sq_miles"])
@@ -170,7 +172,7 @@ def score_location(location, business_type):
             )
     else:
         warnings.append(
-            "OpenStreetMap was too busy to answer, so Competition and Land Use are estimates "
+            "The map data services were too busy to answer, so Competition and Land Use are estimates "
             "from Census ZIP code counts. Try again in a minute for exact nearby businesses."
         )
         complementary_places = {}
@@ -215,6 +217,7 @@ def score_location(location, business_type):
             "busiest_roads_nearby": access_roads[:3]
         },
         "land_use_details": {
-            "complementary_places_nearby": complementary_places
+            "complementary_places_nearby": complementary_places,
+            "nearby_places_source": places_source
         }
     }

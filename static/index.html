@@ -164,6 +164,8 @@
   details ul { margin: 8px 0 0; padding-left: 20px; }
   details li { margin: 2px 0; }
   .note { color: var(--muted); font-size: 0.9rem; }
+  .credits { text-align: center; font-size: 0.8rem; }
+  .credits a { color: inherit; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -234,6 +236,12 @@
     </div>
     <div class="card" id="details"></div>
   </section>
+
+  <p class="note credits">
+    Data: U.S. Census Bureau, Federal Highway Administration, and
+    <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap contributors</a>.
+    Nearby businesses <a href="https://www.geoapify.com/">Powered by Geoapify</a>.
+  </p>
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
@@ -523,8 +531,11 @@
     const landLines = Object.keys(counts).length
       ? Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, v]) => v + " " + k.replace("_", " "))
       : ["See the note below"];
+    const source = data.land_use_details.nearby_places_source;
     details.appendChild(detailSection("Nearby businesses that bring customers", landLines,
-      Object.keys(counts).length ? "From OpenStreetMap." : "No OpenStreetMap list for this spot; the score uses Census ZIP code estimates."));
+      Object.keys(counts).length
+        ? "OpenStreetMap data" + (source === "Geoapify" ? ", via Geoapify." : ".")
+        : "No map list for this spot; the score uses Census ZIP code estimates."));
 
     const warningsBox = $("warnings");
     warningsBox.replaceChildren();

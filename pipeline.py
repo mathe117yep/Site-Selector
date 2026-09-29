@@ -2,6 +2,7 @@ import json
 import math
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 import requests
@@ -112,8 +113,9 @@ AGE_20_TO_39 = [f"B01001_{n:03d}E" for n in [*range(8, 14), *range(32, 38)]]
 AGE_65_PLUS = [f"B01001_{n:03d}E" for n in [*range(20, 26), *range(44, 50)]]
 
 
-def _get_census_key():
-    key = os.environ.get("CENSUS_API_KEY")
+def _get_saved_key(name):
+    """Reads an API key from the environment, or None if it isn't set."""
+    key = os.environ.get(name)
 
     # A PowerShell window opened before `setx` won't have the key in its
     # environment, so on Windows also check where setx saved it.
@@ -121,10 +123,14 @@ def _get_census_key():
         import winreg
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as env:
-                key = winreg.QueryValueEx(env, "CENSUS_API_KEY")[0]
+                key = winreg.QueryValueEx(env, name)[0]
         except OSError:
             pass
+    return key
 
+
+def _get_census_key():
+    key = _get_saved_key("CENSUS_API_KEY")
     if not key:
         raise RuntimeError(
             "CENSUS_API_KEY is not set. Get a free key at "
@@ -540,14 +546,104 @@ def _distance_meters(lat1, lon1, lat2, lon2):
     return 2 * earth_radius * math.asin(math.sqrt(a))
 
 
-@lru_cache(maxsize=256)  # scoring the same spot twice shouldn't hit OSM twice
+@lru_cache(maxsize=256)  # scoring the same spot twice shouldn't look it up twice
 def get_nearby_places(lat, lon, radius_meters):
     """
     Finds businesses and other places within radius_meters of a point.
+    Tries Geoapify first (fast and reliable, needs GEOAPIFY_API_KEY), then
+    the free public OpenStreetMap servers. Both serve OpenStreetMap data.
 
-    Returns a list of dicts like:
+    Returns {"source": "Geoapify", "places": [...]}, where each place is like:
         {"category": "cafe", "name": "Hubbard & Cravens", "distance_meters": 412}
+    Raises RuntimeError if every source fails.
     """
+    if _get_saved_key("GEOAPIFY_API_KEY"):
+        try:
+            return {"source": "Geoapify", "places": _places_from_geoapify(lat, lon, radius_meters)}
+        except (requests.RequestException, ValueError, KeyError):
+            pass  # down, over its daily limit, etc. - try the public servers
+    return {"source": "OpenStreetMap", "places": _places_from_overpass(lat, lon, radius_meters)}
+
+
+# --- Geoapify (OpenStreetMap data on reliable paid servers; free tier) ---
+
+GEOAPIFY_PLACES_URL = "https://api.geoapify.com/v2/places"
+
+# One request per group. Geoapify drops results when some categories are
+# combined in a single request (adding "accommodation" returned only
+# hotels), so each group is asked separately - all at the same time.
+GEOAPIFY_CATEGORY_GROUPS = [
+    "catering", "commercial", "healthcare", "education", "entertainment", "office",
+    "accommodation.hotel", "leisure.park", "service.beauty", "sport.fitness", "sport.sports_centre",
+]
+
+# Geoapify category -> our category. Checked in order; the first match wins.
+GEOAPIFY_CATEGORY_RULES = [
+    ("cafe", ["catering.cafe"]),
+    ("restaurant", ["catering.restaurant", "catering.fast_food"]),
+    ("bar", ["catering.bar", "catering.pub"]),
+    ("salon", ["service.beauty"]),
+    ("clothing", ["commercial.clothing", "commercial.shoes", "commercial.jewelry", "commercial.bag"]),
+    ("gym", ["sport.fitness", "sport.sports_centre"]),
+    ("doctor", ["healthcare.clinic_or_praxis"]),
+    ("pharmacy", ["healthcare.pharmacy", "commercial.health_and_beauty.pharmacy", "commercial.chemist"]),
+    ("hospital", ["healthcare.hospital"]),
+    ("other_medical", ["healthcare"]),
+    ("college", ["education.university", "education.college"]),
+    ("school", ["education.school"]),
+    ("library", ["education.library"]),
+    ("entertainment", ["entertainment.culture.theatre", "entertainment.cinema"]),
+    ("hotel", ["accommodation.hotel"]),
+    ("park", ["leisure.park"]),
+    ("office", ["office"]),
+    ("retail", ["commercial"]),
+]
+
+
+def _categorize_geoapify(categories):
+    for our_category, prefixes in GEOAPIFY_CATEGORY_RULES:
+        for prefix in prefixes:
+            if any(c == prefix or c.startswith(prefix + ".") for c in categories):
+                return our_category
+    return None
+
+
+def _places_from_geoapify(lat, lon, radius_meters):
+    key = _get_saved_key("GEOAPIFY_API_KEY")
+
+    def fetch(group):
+        response = requests.get(GEOAPIFY_PLACES_URL, timeout=15, params={
+            "categories": group,
+            "filter": f"circle:{lon},{lat},{radius_meters}",
+            "limit": 500,
+            "apiKey": key,
+        })
+        response.raise_for_status()
+        return response.json()["features"]
+
+    # If any group fails, the whole lookup fails (and we fall back), so
+    # scores are never based on a partial list.
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        groups = list(pool.map(fetch, GEOAPIFY_CATEGORY_GROUPS))
+
+    places = {}
+    for features in groups:
+        for feature in features:
+            props = feature["properties"]
+            category = _categorize_geoapify(props.get("categories", []))
+            if category is None or props.get("place_id") in places:
+                continue  # unused, or already found by another group
+            places[props.get("place_id")] = {
+                "category": category,
+                "name": props.get("name", "(unnamed)"),
+                "distance_meters": round(_distance_meters(lat, lon, props["lat"], props["lon"]))
+            }
+    return list(places.values())
+
+
+# --- Public OpenStreetMap servers (Overpass; free, no key, often busy) ---
+
+def _places_from_overpass(lat, lon, radius_meters):
     around = f"(around:{radius_meters},{lat},{lon})"
     query = f"""
         [out:json][timeout:25];
