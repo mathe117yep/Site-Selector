@@ -650,10 +650,10 @@
     const d = data.demand_details;
     details.appendChild(detailSection("Demand: who lives here", [
       num(d.people_per_sq_mile) + " residents per square mile",
-      "Median household income " + money(d.tract_median_income) + " (county: " + money(d.county_median_income) + ")",
+      "Median household income " + money(d.tract_median_income) + " (Indiana: " + money(d.state_median_income) + ")",
       "Signals (0 to 100): density " + d.signals.density + ", income " + d.signals.income +
         ", ages 20–39 " + d.signals.young + ", ages 65+ " + d.signals.seniors,
-    ], "Based on Census data for this neighborhood (tract " + data.census_tract + ") compared with the county."));
+    ], "Based on Census data for this neighborhood (tract " + data.census_tract + ") compared with Indiana as a whole."));
 
     const c = data.competition_details;
     const competitorLines = c.nearest_competitors.length

@@ -8,7 +8,7 @@ the math, which takes a moment.
 import math
 from functools import lru_cache
 
-from pipeline import (get_city_areas, get_all_tract_demographics, get_county_demographics,
+from pipeline import (get_city_areas, get_all_tract_demographics, get_state_demographics,
                       get_zip_business_counts, get_roads_in_area, point_in_rings)
 from scoring import calculate_area_scores, AREA_NAICS, AREA_TRAFFIC_RADIUS
 
@@ -96,12 +96,13 @@ def _load_city(city):
     areas = get_city_areas(city)
     tracts = areas["tracts"]
 
-    # Demographics: one Census request per county the city touches
+    # Demographics: one Census request per county the city touches, plus
+    # the statewide numbers every tract is compared against
     counties = {(t["properties"]["STATE"], t["properties"]["COUNTY"]) for t in tracts}
     tract_demographics = {}
-    county_demographics = {}
+    state_demographics = {}
     for state, county in counties:
-        county_demographics[(state, county)] = get_county_demographics(state, county)
+        state_demographics[state] = get_state_demographics(state)
         for tract_code, demographics in get_all_tract_demographics(state, county).items():
             tract_demographics[(state, county, tract_code)] = demographics
 
@@ -137,7 +138,7 @@ def _load_city(city):
     return {
         "tracts": tracts,
         "tract_demographics": tract_demographics,
-        "county_demographics": county_demographics,
+        "state_demographics": state_demographics,
         "tract_zips": tract_zips,
         "tract_roads": tract_roads,
         "zip_counts": zip_counts,
@@ -166,7 +167,7 @@ def score_city(city, business_type, weights=None):
         scores = calculate_area_scores(
             business_type,
             demographics,
-            data["county_demographics"][(state, county)],
+            data["state_demographics"][state],
             props["AREALAND"] / 2_589_988,
             data["zip_counts"].get(zip_area["zip_code"], {}) if zip_area else None,
             zip_area["land_sq_miles"] if zip_area else None,

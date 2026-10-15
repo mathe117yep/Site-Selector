@@ -203,6 +203,12 @@ def get_county_demographics(state, county):
     return _fetch_acs({"for": f"county:{county}", "in": f"state:{state}"})[0][1]
 
 
+@lru_cache(maxsize=64)  # statewide numbers only need asking for once
+def get_state_demographics(state):
+    """The whole state's numbers - what Demand compares each tract against."""
+    return _fetch_acs({"for": f"state:{state}"})[0][1]
+
+
 @lru_cache(maxsize=64)
 def get_all_tract_demographics(state, county):
     """Every tract in a county in one request: {"354201": {...demographics}, ...}"""

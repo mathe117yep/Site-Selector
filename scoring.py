@@ -5,9 +5,13 @@ import math
 #
 # Demand is built from four neighborhood signals, each scaled to 0-100:
 #   density  - how many people live nearby (people per square mile)
-#   income   - tract median income compared to the county's
-#   young    - share of residents aged 20-39, compared to the county's
-#   seniors  - share of residents aged 65+, compared to the county's
+#   income   - tract median income compared to the state's
+#   young    - share of residents aged 20-39, compared to the state's
+#   seniors  - share of residents aged 65+, compared to the state's
+#
+# Comparing to the state (not the county) matters for suburbs: Hamilton
+# County is the richest in Indiana, so comparing Carmel or Fishers to their
+# own county scored well-off neighborhoods as "low income".
 #
 # Each business type weights those signals differently. These weights are
 # starting assumptions, not research-backed numbers - tune them as you learn.
@@ -33,8 +37,10 @@ BUSINESS_TYPE_ALIASES = {
 }
 
 # A tract with this many people per square mile (or more) gets a full 100
-# for density. For reference, Indianapolis as a whole is around 2,300.
-FULL_DENSITY_PER_SQ_MILE = 6000
+# for density. For reference, Indianapolis as a whole is around 2,300 and
+# healthy suburbs like Carmel and Fishers are 2,000-3,000. (Was 6,000, which
+# only urban cores reached.)
+FULL_DENSITY_PER_SQ_MILE = 4000
 
 
 def normalize_business_type(business_type):
@@ -47,31 +53,31 @@ def _clamp(value):
     return max(0.0, min(100.0, value))
 
 
-def _compare_to_county(tract_value, county_value):
+def _compare_to_baseline(tract_value, baseline_value):
     """
-    Scores a tract relative to its county: same as the county = 50,
-    half the county or less = 0, 1.5x the county or more = 100.
+    Scores a tract relative to a baseline (the state): same as the state =
+    50, half the state's value or less = 0, 1.5x or more = 100.
     Missing data scores a neutral 50.
     """
-    if tract_value is None or not county_value:
+    if tract_value is None or not baseline_value:
         return 50.0
-    ratio = tract_value / county_value
+    ratio = tract_value / baseline_value
     return _clamp((ratio - 0.5) * 100)
 
 
-def calculate_demand_score(business_type, tract, county, tract_land_sq_miles):
+def calculate_demand_score(business_type, tract, baseline, tract_land_sq_miles):
     """
     business_type: a DEMAND_WEIGHTS key (use normalize_business_type first)
-    tract, county: demographics dicts from pipeline.get_tract_demographics /
-                   get_county_demographics
+    tract, baseline: demographics dicts from pipeline.get_tract_demographics /
+                     get_state_demographics
     """
     density = tract["population"] / tract_land_sq_miles if tract_land_sq_miles else 0
 
     signals = {
         "density": _clamp(density / FULL_DENSITY_PER_SQ_MILE * 100),
-        "income": _compare_to_county(tract["median_income"], county["median_income"]),
-        "young": _compare_to_county(tract["share_age_20_39"], county["share_age_20_39"]),
-        "seniors": _compare_to_county(tract["share_age_65_plus"], county["share_age_65_plus"]),
+        "income": _compare_to_baseline(tract["median_income"], baseline["median_income"]),
+        "young": _compare_to_baseline(tract["share_age_20_39"], baseline["share_age_20_39"]),
+        "seniors": _compare_to_baseline(tract["share_age_65_plus"], baseline["share_age_65_plus"]),
     }
 
     weights = DEMAND_WEIGHTS[business_type]
@@ -158,8 +164,10 @@ COMPLEMENT_WEIGHTS = {
     "doctor": {"pharmacy": 3, "hospital": 3, "other_medical": 1, "office": 0.5},
 }
 
-# Weighted complement total that earns a Land Use score of 50
-LAND_USE_HALF_POINT = 20
+# Weighted complement total that earns a Land Use score of 50 - roughly 25
+# helpful businesses nearby. (Was 20, which took about 60: even downtown
+# Indianapolis only reached 60.)
+LAND_USE_HALF_POINT = 8
 
 
 def _closeness(distance_meters, radius_meters):
@@ -410,14 +418,14 @@ def calculate_area_traffic_score(roads):
     return round(_vehicles_to_score(roads[0]["vehicles_per_day"]) if roads else 0.0, 1)
 
 
-def calculate_area_scores(business_type, tract, county, tract_land_sq_miles,
+def calculate_area_scores(business_type, tract, baseline, tract_land_sq_miles,
                           zip_counts, zip_land_sq_miles, roads, weights=None):
     """
     All four sub-scores plus the overall score for one neighborhood.
     zip_counts is None if we couldn't tell which ZIP the tract is in; then
     Competition and Land Use fall back to a neutral 50.
     """
-    demand = calculate_demand_score(business_type, tract, county, tract_land_sq_miles)["demand"]
+    demand = calculate_demand_score(business_type, tract, baseline, tract_land_sq_miles)["demand"]
 
     if zip_counts is None:
         competition, land_use = 50.0, 50.0

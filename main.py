@@ -10,7 +10,7 @@ from scoring import (calculate_fit_score, calculate_demand_score, calculate_comp
                      normalize_business_type, normalize_fit_weights, DEMAND_WEIGHTS, ONE_MILE, COMPETITOR_NAICS, AREA_NAICS,
                      COMPETITOR_CATEGORIES, COMPLEMENT_WEIGHTS, SEARCH_RADIUS,
                      FRONTAGE_RADIUS, SETBACK_RADIUS, ACCESS_RADIUS)
-from pipeline import (geocode_address, locate_point, get_tract_demographics, get_county_demographics,
+from pipeline import (geocode_address, locate_point, get_tract_demographics, get_state_demographics,
                       get_nearby_places, get_zip_business_count, get_zip_business_counts, get_nearby_roads,
                       INDIANA_CITIES)
 from areas import score_city
@@ -201,11 +201,11 @@ def score_location(location, business_type, weights=None, removed_ids=()):
     """
     warnings = []
 
-    # Pull live data - Census demographics for the tract vs. its county,
+    # Pull live data - Census demographics for the tract vs. its state,
     # the official count of competitors in the ZIP code, and traffic counts.
     try:
         tract = get_tract_demographics(location["state"], location["county"], location["tract"])
-        county = get_county_demographics(location["state"], location["county"])
+        state = get_state_demographics(location["state"])
         zip_count = None
         if location["zip_code"]:
             zip_count = get_zip_business_count(location["zip_code"], COMPETITOR_NAICS[business_type])
@@ -245,7 +245,7 @@ def score_location(location, business_type, weights=None, removed_ids=()):
     )
 
     # Turn the raw data into 0-100 sub-scores
-    demand_result = calculate_demand_score(business_type, tract, county, location["tract_land_sq_miles"])
+    demand_result = calculate_demand_score(business_type, tract, state, location["tract_land_sq_miles"])
     competition_result = calculate_competition_score(
         business_type, places or [], zip_count, location["zip_land_sq_miles"], removed_competitors
     )
@@ -295,7 +295,7 @@ def score_location(location, business_type, weights=None, removed_ids=()):
             "signals": demand_result["signals"],
             "people_per_sq_mile": demand_result["people_per_sq_mile"],
             "tract_median_income": tract["median_income"],
-            "county_median_income": county["median_income"]
+            "state_median_income": state["median_income"]
         },
         "competition_details": {
             "score_based_on": competition_result["source"],
