@@ -144,11 +144,12 @@ def _load_city(city):
     }
 
 
-def score_city(city, business_type):
+def score_city(city, business_type, weights=None):
     """
     Returns a GeoJSON FeatureCollection (one feature per tract, ready for the
     map) with each tract's scores in its properties, plus "suggestions":
-    the top neighborhoods, best first.
+    the top neighborhoods, best first. `weights` optionally replaces the
+    Charter's Fit Score weights (see scoring.normalize_fit_weights).
     """
     data = _load_city(city)
     features = []
@@ -170,6 +171,7 @@ def score_city(city, business_type):
             data["zip_counts"].get(zip_area["zip_code"], {}) if zip_area else None,
             zip_area["land_sq_miles"] if zip_area else None,
             roads,
+            weights,
         )
 
         features.append({

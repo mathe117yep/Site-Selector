@@ -193,6 +193,7 @@ def _summarize_acs_row(row):
     }
 
 
+@lru_cache(maxsize=512)  # rescoring a spot (e.g. with new weights) shouldn't ask Census again
 def get_tract_demographics(state, county, tract):
     return _fetch_acs({"for": f"tract:{tract}", "in": f"state:{state} county:{county}"})[0][1]
 

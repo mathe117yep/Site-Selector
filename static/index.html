@@ -69,6 +69,31 @@
   @media (min-width: 760px) { .tool + .tool { border-left: 1px solid var(--border); padding-left: 16px; } }
   .hint { color: var(--muted); font-size: 0.9rem; margin: 8px 0 0; }
 
+  /* Advanced filters (custom Fit Score weights) */
+  .advanced { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .secondary-button {
+    width: auto; padding: 8px 14px; background: transparent;
+    color: var(--accent); border: 1px solid var(--accent);
+  }
+  .custom-tag {
+    font-size: 0.8rem; font-weight: 600; color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    padding: 3px 9px; border-radius: 999px;
+  }
+  .advanced-panel { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; }
+  .advanced-panel .hint { margin: 0 0 4px; }
+  .weight-row { display: grid; grid-template-columns: 11rem 1fr 3.5rem; align-items: center; gap: 12px; margin: 10px 0; }
+  .weight-row label { margin: 0; }
+  .weight-row .weight-help { display: block; font-weight: 400; color: var(--muted); font-size: 0.8rem; }
+  .weight-row output { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+  input[type="range"] { padding: 0; margin: 0; border: none; background: none; accent-color: var(--accent); }
+  @media (max-width: 520px) {
+    .weight-row { grid-template-columns: 1fr 3.5rem; row-gap: 4px; }
+    .weight-row input[type="range"] { grid-column: 1 / -1; grid-row: 2; }
+  }
+  .advanced-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .advanced-actions button { width: auto; padding: 10px 16px; }
+
   label { display: block; font-weight: 600; margin-bottom: 6px; }
   input, select {
     width: 100%;
@@ -186,6 +211,40 @@
       <option value="personal_trainer">Personal trainer</option>
       <option value="doctor">Doctor (small practice)</option>
     </select>
+
+    <div class="advanced">
+      <button type="button" class="secondary-button" id="advanced-toggle"
+              aria-expanded="false" aria-controls="advanced-panel">Advanced filters</button>
+      <span class="custom-tag" id="custom-tag" hidden>Custom weights on</span>
+    </div>
+    <div class="advanced-panel" id="advanced-panel" hidden>
+      <p class="hint">Choose how much each part counts toward the Fit Score. Set any slider to 0 to ignore that part.
+        The numbers don't need to add up to 100. They're scaled to percentages automatically.</p>
+      <div class="weight-row">
+        <label for="w-demand">Demand<span class="weight-help">Who lives nearby</span></label>
+        <input type="range" id="w-demand" min="0" max="100" step="5">
+        <output id="w-demand-out" for="w-demand"></output>
+      </div>
+      <div class="weight-row">
+        <label for="w-competition">Competition<span class="weight-help">Fewer similar businesses</span></label>
+        <input type="range" id="w-competition" min="0" max="100" step="5">
+        <output id="w-competition-out" for="w-competition"></output>
+      </div>
+      <div class="weight-row">
+        <label for="w-traffic">Traffic &amp; access<span class="weight-help">Cars passing by</span></label>
+        <input type="range" id="w-traffic" min="0" max="100" step="5">
+        <output id="w-traffic-out" for="w-traffic"></output>
+      </div>
+      <div class="weight-row">
+        <label for="w-land_use">Nearby businesses<span class="weight-help">Neighbors that bring customers</span></label>
+        <input type="range" id="w-land_use" min="0" max="100" step="5">
+        <output id="w-land_use-out" for="w-land_use"></output>
+      </div>
+      <div class="advanced-actions">
+        <button type="button" id="weights-apply">Apply</button>
+        <button type="button" class="secondary-button" id="weights-reset"title="Demand 30%, Competition 25%, Traffic 25%, Nearby businesses 20%">Reset to Charter weights</button>
+      </div>
+    </div>
 
     <div class="tools">
       <form class="tool" id="city-form">
@@ -353,6 +412,87 @@
     return L.divIcon({ className: "", html: '<div class="rank-pin">' + rank + "</div>", iconSize: [26, 26], iconAnchor: [13, 13] });
   }
 
+  // ---------- Advanced filters: custom Fit Score weights ----------
+
+  const WEIGHT_KEYS = ["demand", "competition", "traffic", "land_use"];
+  const CHARTER_WEIGHTS = { demand: 30, competition: 25, traffic: 25, land_use: 20 };
+  const WEIGHTS_STORAGE_KEY = "siteSelectorWeights";
+  let appliedWeights = null;   // null = the Charter weights
+  let lastSpot = null;         // what to rescore when weights change
+
+  function sliderWeights() {
+    const values = {};
+    WEIGHT_KEYS.forEach(key => { values[key] = Number($("w-" + key).value); });
+    return values;
+  }
+  function setSliders(weights) {
+    WEIGHT_KEYS.forEach(key => { $("w-" + key).value = weights[key]; });
+    updateWeightLabels();
+  }
+  function isCharter(weights) {
+    return WEIGHT_KEYS.every(key => weights[key] === CHARTER_WEIGHTS[key]);
+  }
+
+  // Each slider shows its share of the total, e.g. 40 / 20 / 20 / 0 -> 50% / 25% / 25% / 0%
+  function updateWeightLabels() {
+    const values = sliderWeights();
+    const total = WEIGHT_KEYS.reduce((sum, key) => sum + values[key], 0);
+    WEIGHT_KEYS.forEach(key => {
+      $("w-" + key + "-out").textContent = total ? Math.round(values[key] / total * 100) + "%" : "0%";
+    });
+    $("weights-apply").disabled = total === 0;
+    $("weights-apply").title = total === 0 ? "Set at least one slider above 0" : "";
+  }
+
+  function showCustomTag() { $("custom-tag").hidden = appliedWeights === null; }
+
+  // Remembered in this browser only (a per-person convenience)
+  function saveWeights() {
+    try {
+      if (appliedWeights) localStorage.setItem(WEIGHTS_STORAGE_KEY, JSON.stringify(appliedWeights));
+      else localStorage.removeItem(WEIGHTS_STORAGE_KEY);
+    } catch (err) { /* storage blocked - weights just won't be remembered */ }
+  }
+  function loadWeights() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(WEIGHTS_STORAGE_KEY));
+      if (saved && WEIGHT_KEYS.every(key => typeof saved[key] === "number")) appliedWeights = saved;
+    } catch (err) { /* nothing saved, or storage blocked */ }
+    setSliders(appliedWeights || CHARTER_WEIGHTS);
+    showCustomTag();
+  }
+
+  // Rescore whatever is on screen with the new weights
+  function rescoreWithNewWeights() {
+    if (heatLayer) $("city-form").requestSubmit();
+    if (lastSpot && lastSpot.type === "point") scoreSpot(lastSpot.lat, lastSpot.lon);
+    if (lastSpot && lastSpot.type === "address") {
+      $("address").value = lastSpot.address;
+      $("address-form").requestSubmit();
+    }
+  }
+
+  $("advanced-toggle").addEventListener("click", () => {
+    const panel = $("advanced-panel");
+    panel.hidden = !panel.hidden;
+    $("advanced-toggle").setAttribute("aria-expanded", String(!panel.hidden));
+  });
+  WEIGHT_KEYS.forEach(key => $("w-" + key).addEventListener("input", updateWeightLabels));
+  $("weights-apply").addEventListener("click", () => {
+    const values = sliderWeights();
+    appliedWeights = isCharter(values) ? null : values;
+    saveWeights();
+    showCustomTag();
+    rescoreWithNewWeights();
+  });
+  $("weights-reset").addEventListener("click", () => {
+    setSliders(CHARTER_WEIGHTS);
+    appliedWeights = null;
+    saveWeights();
+    showCustomTag();
+    rescoreWithNewWeights();
+  });
+
   // ---------- 1. Best areas in a city ----------
 
   async function loadCities() {
@@ -432,7 +572,9 @@
       });
       list.appendChild(item);
     });
-    $("suggestions-title").textContent = "Top areas for a " + businessLabel().toLowerCase() + " in " + data.city;
+    const custom = data.features.length && data.features[0].properties.custom_weights;
+    $("suggestions-title").textContent = "Top areas for a " + businessLabel().toLowerCase() + " in " + data.city +
+      (custom ? " (custom weights)" : "");
     $("suggestions-card").hidden = data.suggestions.length === 0;
   }
 
@@ -444,6 +586,7 @@
     setMapLoading("Scoring every neighborhood in " + city + "… the first time for a city can take up to a minute.");
     try {
       const params = new URLSearchParams({ city, business_type: businessSelect.value });
+      if (appliedWeights) WEIGHT_KEYS.forEach(key => params.set(key + "_weight", appliedWeights[key]));
       showCityScores(await api("/area_scores?" + params));
     } catch (err) {
       showError(err.message);
@@ -475,7 +618,8 @@
     $("fit-score").style.color = colorFor(data.fit_score);
     $("tier").textContent = data.tier;
     $("tier").style.color = colorFor(data.fit_score);
-    $("matched").textContent = data.matched_address + " · " + businessLabel();
+    $("matched").textContent = data.matched_address + " · " + businessLabel() +
+      (data.custom_weights ? " · Custom weights" : "");
 
     const bars = $("bars");
     bars.replaceChildren();
@@ -484,7 +628,8 @@
       const row = el("div", null, "bar-row");
       const label = el("div", null, "bar-label");
       const name = el("span", part.label + " ");
-      name.appendChild(el("span", "(" + part.weight + (part.note ? ", " + part.note : "") + ")", "bar-weight"));
+      const weight = data.weights ? data.weights[part.key] + "%" : part.weight;
+      name.appendChild(el("span", "(" + weight + (part.note ? ", " + part.note : "") + ")", "bar-weight"));
       label.appendChild(name);
       label.appendChild(el("span", score));
       const track = el("div", null, "track");
@@ -666,9 +811,10 @@
       const data = await api("/score_point", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lat, lon, business_type: businessSelect.value }),
+        body: JSON.stringify({ lat, lon, business_type: businessSelect.value, weights: appliedWeights || undefined }),
       });
       if (requestId !== spotRequest) return;
+      lastSpot = { type: "point", lat, lon };
       showSiteResult(data);
       const popup = el("div");
       popup.appendChild(el("div", businessLabel() + " here:"));
@@ -701,8 +847,10 @@
       const data = await api("/score", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ address: $("address").value, business_type: businessSelect.value }),
+        body: JSON.stringify({ address: $("address").value, business_type: businessSelect.value,
+                               weights: appliedWeights || undefined }),
       });
+      lastSpot = { type: "address", address: $("address").value };
       showSiteResult(data);
       const popup = el("div");
       popup.appendChild(el("div", data.matched_address));
@@ -722,6 +870,7 @@
     }
   });
 
+  loadWeights();
   loadCities();
 </script>
 </body>

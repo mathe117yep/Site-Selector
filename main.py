@@ -1,12 +1,13 @@
 from pathlib import Path
+from typing import Annotated
 
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from scoring import (calculate_fit_score, calculate_demand_score, calculate_competition_score,
                      calculate_land_use_score, calculate_traffic_score, calculate_area_land_use_score,
-                     normalize_business_type, DEMAND_WEIGHTS, ONE_MILE, COMPETITOR_NAICS, AREA_NAICS,
+                     normalize_business_type, normalize_fit_weights, DEMAND_WEIGHTS, ONE_MILE, COMPETITOR_NAICS, AREA_NAICS,
                      COMPETITOR_CATEGORIES, COMPLEMENT_WEIGHTS, SEARCH_RADIUS,
                      FRONTAGE_RADIUS, SETBACK_RADIUS, ACCESS_RADIUS)
 from pipeline import (geocode_address, locate_point, get_tract_demographics, get_county_demographics,
@@ -29,15 +30,30 @@ ON_ROAD_RADIUS = 40  # meters
 # If someone sends bad data (missing a field, wrong type), FastAPI
 # will automatically reject it with a clear error before it ever
 # reaches our code.
+class FitWeights(BaseModel):
+    # "Advanced filters" on the website. Any numbers from 0 to 100 - they
+    # don't have to add up to 100, because they're scaled to shares.
+    demand: float = Field(30, ge=0, le=100)
+    competition: float = Field(25, ge=0, le=100)
+    traffic: float = Field(25, ge=0, le=100)
+    land_use: float = Field(20, ge=0, le=100)
+
+
+# An optional 0-100 weight in a web address, e.g. /area_scores?...&demand_weight=40
+OptionalWeight = Annotated[float | None, Query(ge=0, le=100)]
+
+
 class ScoreRequest(BaseModel):
     address: str
     business_type: str
+    weights: FitWeights | None = None  # leave out to use the Charter weights
 
 
 class PointScoreRequest(BaseModel):
     lat: float
     lon: float
     business_type: str
+    weights: FitWeights | None = None
 
 
 @app.get("/")
@@ -52,6 +68,18 @@ def home_page():
 def health_check():
     # Hosting services ping this to check the app is up
     return {"message": "Site Selector API is running"}
+
+
+def _weights_or_error(weights):
+    """FitWeights (or None) -> a plain dict for the scoring code, checked."""
+    if weights is None:
+        return None
+    as_dict = weights.model_dump()
+    try:
+        normalize_fit_weights(as_dict)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return as_dict
 
 
 def _business_type_or_error(raw_business_type):
@@ -77,7 +105,7 @@ def score_site(request: ScoreRequest):
     if location is None:
         raise HTTPException(status_code=422, detail="Could not match that address. Try including city and state.")
 
-    result = score_location(location, business_type)
+    result = score_location(location, business_type, _weights_or_error(request.weights))
     return {"address": request.address, **result}
 
 
@@ -91,7 +119,7 @@ def score_point(request: PointScoreRequest):
         raise HTTPException(status_code=503, detail="The Census location service didn't respond. Please try again.")
     if location is None:
         raise HTTPException(status_code=422, detail="That spot isn't in a U.S. census tract. Try clicking on land.")
-    return score_location(location, business_type)
+    return score_location(location, business_type, _weights_or_error(request.weights))
 
 
 @app.get("/cities")
@@ -101,13 +129,25 @@ def list_cities():
 
 
 @app.get("/area_scores")
-def area_scores(city: str, business_type: str):
-    """Scores every neighborhood in a city, for the heat map."""
+def area_scores(city: str, business_type: str,
+                demand_weight: OptionalWeight = None, competition_weight: OptionalWeight = None,
+                traffic_weight: OptionalWeight = None, land_use_weight: OptionalWeight = None):
+    """
+    Scores every neighborhood in a city, for the heat map. The four
+    *_weight values are optional "Advanced filters"; give all four or none.
+    """
     business_type = _business_type_or_error(business_type)
+    given = [demand_weight, competition_weight, traffic_weight, land_use_weight]
+    weights = None
+    if any(w is not None for w in given):
+        if any(w is None for w in given):
+            raise HTTPException(status_code=422, detail="Give all four weights, or none.")
+        weights = _weights_or_error(FitWeights(demand=demand_weight, competition=competition_weight,
+                                               traffic=traffic_weight, land_use=land_use_weight))
     if city not in INDIANA_CITIES:
         raise HTTPException(status_code=422, detail=f"Unknown city. Try one of: {', '.join(sorted(INDIANA_CITIES))}")
     try:
-        return score_city(city, business_type)
+        return score_city(city, business_type, weights)
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error))
     except requests.RequestException:
@@ -145,10 +185,11 @@ def _nearby_businesses_for_map(places, business_type):
     }
 
 
-def score_location(location, business_type):
+def score_location(location, business_type, weights=None):
     """
     The full site score for one spot. `location` comes from geocode_address
-    (typed address) or locate_point (map click).
+    (typed address) or locate_point (map click). `weights` optionally
+    replaces the Charter's Fit Score weights.
     """
     warnings = []
 
@@ -217,7 +258,8 @@ def score_location(location, business_type):
                 pass  # keep the neutral 50
 
     result = calculate_fit_score(
-        demand_result["demand"], competition_result["competition"], traffic_result["traffic"], land_use
+        demand_result["demand"], competition_result["competition"], traffic_result["traffic"], land_use,
+        weights
     )
 
     return {

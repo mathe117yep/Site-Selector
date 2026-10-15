@@ -402,7 +402,7 @@ def calculate_area_traffic_score(roads):
 
 
 def calculate_area_scores(business_type, tract, county, tract_land_sq_miles,
-                          zip_counts, zip_land_sq_miles, roads):
+                          zip_counts, zip_land_sq_miles, roads, weights=None):
     """
     All four sub-scores plus the overall score for one neighborhood.
     zip_counts is None if we couldn't tell which ZIP the tract is in; then
@@ -420,20 +420,42 @@ def calculate_area_scores(business_type, tract, county, tract_land_sq_miles,
         land_use = calculate_area_land_use_score(business_type, zip_counts, zip_land_sq_miles)
 
     traffic = calculate_area_traffic_score(roads)
-    return calculate_fit_score(demand, competition, traffic, land_use)
+    return calculate_fit_score(demand, competition, traffic, land_use, weights)
 
 
-def calculate_fit_score(demand, competition, traffic, land_use):
+# The weighted formula from the project Charter. Users can override these
+# with "Advanced filters" on the website.
+DEFAULT_FIT_WEIGHTS = {"demand": 0.30, "competition": 0.25, "traffic": 0.25, "land_use": 0.20}
+
+
+def normalize_fit_weights(weights):
     """
-    Calculates the composite Fit Score for a candidate site, using the
-    weighted formula from the project Charter:
+    Turns any non-negative weights (e.g. sliders at 40, 20, 20, 0) into
+    shares that add up to 1. Returns the Charter weights for None.
+    Raises ValueError if they're all zero.
+    """
+    if weights is None:
+        return dict(DEFAULT_FIT_WEIGHTS)
+    total = sum(weights[name] for name in DEFAULT_FIT_WEIGHTS)
+    if total <= 0:
+        raise ValueError("At least one weight must be above zero.")
+    return {name: weights[name] / total for name in DEFAULT_FIT_WEIGHTS}
+
+
+def calculate_fit_score(demand, competition, traffic, land_use, weights=None):
+    """
+    Calculates the composite Fit Score for a candidate site. By default it
+    uses the weighted formula from the project Charter:
 
         Fit Score = (0.30 * Demand) + (0.25 * Competition)
                   + (0.25 * Traffic/Access) + (0.20 * Complementary Land Use)
 
+    `weights` can replace those four numbers (see normalize_fit_weights).
     Each input should be a 0-100 sub-score.
     """
-    fit_score = (0.30 * demand) + (0.25 * competition) + (0.25 * traffic) + (0.20 * land_use)
+    w = normalize_fit_weights(weights)
+    fit_score = (w["demand"] * demand) + (w["competition"] * competition) \
+        + (w["traffic"] * traffic) + (w["land_use"] * land_use)
 
     if fit_score >= 75:
         tier = "Strong Fit"
@@ -450,7 +472,10 @@ def calculate_fit_score(demand, competition, traffic, land_use):
             "competition": competition,
             "traffic": traffic,
             "land_use": land_use
-        }
+        },
+        # The weights actually used, as percentages (e.g. {"demand": 30.0, ...})
+        "weights": {name: round(share * 100, 1) for name, share in w.items()},
+        "custom_weights": weights is not None
     }
 
 
