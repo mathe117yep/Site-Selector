@@ -181,12 +181,19 @@ def estimate_competitors_from_zip(business_type, zip_count, zip_land_sq_miles):
     return zip_count * share_of_zip
 
 
-def calculate_competition_score(business_type, places, zip_count=None, zip_land_sq_miles=None):
+def calculate_competition_score(business_type, places, zip_count=None, zip_land_sq_miles=None,
+                                removed_competitors=0):
     """
     Scores competition from OpenStreetMap's exact locations, cross-checked
     against the Census ZIP code count. Whichever source shows MORE
     competition wins, because the usual error is missing businesses
     (OpenStreetMap gaps), not extra ones.
+
+    removed_competitors: how many mapped competitors inside the search
+    radius a visitor marked as "not a competitor" (they're already left out
+    of `places`). They're also taken off the Census estimate - otherwise
+    removing them would often change nothing, because the Census estimate
+    usually wins downtown.
     """
     radius = SEARCH_RADIUS[business_type]
     competitors = [p for p in places
@@ -199,6 +206,8 @@ def calculate_competition_score(business_type, places, zip_count=None, zip_land_
     # We don't know where the ZIP's businesses are, just how many. Spread
     # evenly over a circle, their average closeness works out to 1/3.
     zip_estimate = estimate_competitors_from_zip(business_type, zip_count, zip_land_sq_miles)
+    if zip_estimate is not None:
+        zip_estimate = max(0.0, zip_estimate - removed_competitors)
     zip_pressure = zip_estimate / 3 if zip_estimate is not None else 0
 
     if zip_pressure > osm_pressure:

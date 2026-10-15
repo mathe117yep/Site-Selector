@@ -155,6 +155,12 @@
   }
   .leaflet-popup-content { font: 14px/1.45 system-ui, sans-serif; margin: 10px 12px; }
   .popup-score { font-size: 1.4rem; font-weight: 700; }
+  .popup-action {
+    display: block; width: 100%; margin-top: 8px; padding: 7px 10px;
+    font: 600 13px/1.2 system-ui, sans-serif; color: #c53030;
+    background: #fff; border: 1px solid #c53030; border-radius: 6px; cursor: pointer;
+  }
+  .popup-action-undo { color: #2f5bd3; border-color: #2f5bd3; }
   .popup-link { color: var(--accent); cursor: pointer; text-decoration: underline; background: none; border: none; padding: 0; width: auto; font: inherit; }
 
   /* Suggestions list */
@@ -465,11 +471,7 @@
   // Rescore whatever is on screen with the new weights
   function rescoreWithNewWeights() {
     if (heatLayer) $("city-form").requestSubmit();
-    if (lastSpot && lastSpot.type === "point") scoreSpot(lastSpot.lat, lastSpot.lon);
-    if (lastSpot && lastSpot.type === "address") {
-      $("address").value = lastSpot.address;
-      $("address-form").requestSubmit();
-    }
+    rescoreCurrentSpot();
   }
 
   $("advanced-toggle").addEventListener("click", () => {
@@ -657,6 +659,10 @@
     const competitorLines = c.nearest_competitors.length
       ? c.nearest_competitors.map(p => p.name + " (" + p.distance_miles + " mi)")
       : ["No competitors found on the map nearby"];
+    if (c.competitors_removed_by_you) {
+      competitorLines.push("You removed " + c.competitors_removed_by_you + " competitor" +
+                           (c.competitors_removed_by_you === 1 ? "" : "s") + " from this score (gray pins on the map)");
+    }
     competitorLines.push("Census count in ZIP " + c.zip_code + ": " + num(c.census_competitors_in_zip) +
                          " (about " + num(c.census_estimate_in_radius) + " within the search area)");
     details.appendChild(detailSection("Competition: similar businesses nearby", competitorLines,
@@ -690,19 +696,32 @@
     $("results").hidden = false;
   }
 
-  function placeSpotMarker(lat, lon, popupContent) {
+  function placeSpotMarker(lat, lon, popupContent, openPopup = true) {
     if (spotMarker) spotMarker.remove();
     spotMarker = L.marker([lat, lon], {
       icon: L.divIcon({ className: "", html: '<div class="spot-pin"></div>', iconSize: [18, 18], iconAnchor: [9, 18] }),
       zIndexOffset: 2000,
     }).addTo(map);
-    spotMarker.bindPopup(popupContent).openPopup();
+    spotMarker.bindPopup(popupContent);
+    if (openPopup) spotMarker.openPopup();
   }
 
   // ---------- Nearby businesses: 1-mile circle with red/green pins ----------
 
   const COMPETITOR_PIN = "#d03b3b";   // red
   const SYNERGY_PIN = "#0ca30c";      // green
+  const REMOVED_PIN = "#8a8f98";      // gray: competitors the visitor removed
+
+  // Competitors the visitor marked "not a competitor", per business type.
+  // Kept until the page is reloaded.
+  const removedByType = {};
+  function removedPlaceIds() { return [...(removedByType[businessSelect.value] || [])]; }
+  function setRemoved(placeId, removed) {
+    const set = removedByType[businessSelect.value] = removedByType[businessSelect.value] || new Set();
+    if (removed) set.add(placeId); else set.delete(placeId);
+    map.closePopup();
+    rescoreCurrentSpot();
+  }
   const PLACE_LABELS = {
     cafe: "Café / coffee shop", restaurant: "Restaurant", bar: "Bar / pub", salon: "Salon / barber",
     clothing: "Clothing, shoe or jewelry store", gym: "Gym / fitness center", doctor: "Doctor's office / clinic",
@@ -719,19 +738,31 @@
     if (pinKey) { pinKey.remove(); pinKey = null; }
   }
 
-  function businessPopup(place, isCompetitor, scoringRadius) {
+  // role: "competitor", "synergy" or "removed"
+  function businessPopup(place, role, scoringRadius) {
     const box = el("div");
     const label = PLACE_LABELS[place.category] || place.category;
     box.appendChild(el("strong", place.name === "(unnamed)" ? label : place.name));
     box.appendChild(el("div", label));
-    const role = el("div", isCompetitor ? "Competitor" : "Brings customers");
-    role.style.color = isCompetitor ? COMPETITOR_PIN : SYNERGY_PIN;
-    role.style.fontWeight = "600";
-    box.appendChild(role);
+    const roleText = { competitor: "Competitor", synergy: "Brings customers", removed: "Removed by you, not counted" }[role];
+    const roleLine = el("div", roleText);
+    roleLine.style.color = { competitor: COMPETITOR_PIN, synergy: SYNERGY_PIN, removed: REMOVED_PIN }[role];
+    roleLine.style.fontWeight = "600";
+    box.appendChild(roleLine);
     if (place.address) box.appendChild(el("div", place.address));
     box.appendChild(el("div", place.distance_miles + " mi away"));
-    if (!place.counts_in_score) {
+    if (!place.counts_in_score && role !== "removed") {
       box.appendChild(el("div", "Outside the " + scoringRadius + "-mile scoring area, so not counted in the score", "note"));
+    }
+    if (role === "competitor") {
+      const remove = el("button", "Not a competitor? Remove it", "popup-action");
+      remove.addEventListener("click", () => setRemoved(place.id, true));
+      box.appendChild(remove);
+    }
+    if (role === "removed") {
+      const putBack = el("button", "Put it back", "popup-action popup-action-undo");
+      putBack.addEventListener("click", () => setRemoved(place.id, false));
+      box.appendChild(putBack);
     }
     return box;
   }
@@ -740,8 +771,10 @@
     pinKey = L.control({ position: "bottomleft" });
     pinKey.onAdd = () => {
       const box = el("div", null, "legend");
-      [[COMPETITOR_PIN, "Competitor (" + nearby.competitors.length + ")"],
-       [SYNERGY_PIN, "Brings customers (" + nearby.synergistic.length + ")"]].forEach(([color, text]) => {
+      const rows = [[COMPETITOR_PIN, "Competitor (" + nearby.competitors.length + ")"],
+                    [SYNERGY_PIN, "Brings customers (" + nearby.synergistic.length + ")"]];
+      if (nearby.removed.length) rows.push([REMOVED_PIN, "Removed by you (" + nearby.removed.length + ")"]);
+      rows.forEach(([color, text]) => {
         const row = el("div", null, "legend-row");
         const dot = el("span", null, "pin-dot");
         dot.style.background = color;
@@ -778,14 +811,14 @@
     const area = L.latLng(data.lat, data.lon).toBounds(nearby.radius_miles * 1609 * 2);
     if (!nearby.available) return area;
 
-    // Green first, then red on top, so competitors are never hidden
-    [[nearby.synergistic, false], [nearby.competitors, true]].forEach(([places, isCompetitor]) => {
+    // Gray and green first, then red on top, so competitors are never hidden
+    [[nearby.removed, "removed", REMOVED_PIN], [nearby.synergistic, "synergy", SYNERGY_PIN],
+     [nearby.competitors, "competitor", COMPETITOR_PIN]].forEach(([places, role, color]) => {
       places.forEach(place => {
         L.circleMarker([place.lat, place.lon], {
-          radius: 7, color: "#ffffff", weight: 1.5, fillOpacity: 0.95,
-          fillColor: isCompetitor ? COMPETITOR_PIN : SYNERGY_PIN,
+          radius: 7, color: "#ffffff", weight: 1.5, fillOpacity: 0.95, fillColor: color,
           bubblingMouseEvents: false,   // tapping a pin opens its details instead of scoring that spot
-        }).bindPopup(businessPopup(place, isCompetitor, nearby.scoring_radius_miles)).addTo(nearbyLayer);
+        }).bindPopup(businessPopup(place, role, nearby.scoring_radius_miles)).addTo(nearbyLayer);
       });
     });
     showPinKey(nearby);
@@ -799,72 +832,69 @@
     map.fitBounds(bounds, { padding: [10, 10] });
   }
 
-  let spotRequest = 0; // ignore answers to older taps if the user taps again
+  let spotRequest = 0; // ignore answers to older requests if a newer one starts
 
-  async function scoreSpot(lat, lon) {
+  // Scores one spot. spot is { type: "point", lat, lon } or { type: "address", address }.
+  // keepView: rescoring the same spot (removed a competitor, new weights), so
+  // leave the map where it is instead of zooming and scrolling.
+  async function scoreSite(spot, { keepView = false } = {}) {
     clearError();
     const requestId = ++spotRequest;
-    clearNearbyBusinesses();
-    placeSpotMarker(lat, lon, el("div", "Scoring this spot…"));
-    statusText.textContent = "Scoring this spot… this can take up to 30 seconds.";
+    if (!keepView) {
+      clearNearbyBusinesses();
+      if (spot.type === "point") placeSpotMarker(spot.lat, spot.lon, el("div", "Scoring this spot…"));
+    }
+    statusText.textContent = keepView ? "Updating the score…"
+      : "Pulling Census, map and traffic data. This can take up to 30 seconds…";
+
+    const body = { business_type: businessSelect.value, weights: appliedWeights || undefined,
+                   removed_places: removedPlaceIds() };
+    if (spot.type === "point") Object.assign(body, { lat: spot.lat, lon: spot.lon });
+    else body.address = spot.address;
+
     try {
-      const data = await api("/score_point", {
+      const data = await api(spot.type === "point" ? "/score_point" : "/score", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lat, lon, business_type: businessSelect.value, weights: appliedWeights || undefined }),
+        body: JSON.stringify(body),
       });
       if (requestId !== spotRequest) return;
-      lastSpot = { type: "point", lat, lon };
+      lastSpot = spot;
       showSiteResult(data);
+
       const popup = el("div");
-      popup.appendChild(el("div", businessLabel() + " here:"));
+      popup.appendChild(el("div", spot.type === "point" ? businessLabel() + " here:" : data.matched_address));
       const score = el("div", data.fit_score + " · " + data.tier, "popup-score");
       score.style.color = colorFor(data.fit_score);
       popup.appendChild(score);
       const more = el("button", "See the full breakdown", "popup-link");
       more.addEventListener("click", () => $("results").scrollIntoView({ behavior: "smooth" }));
       popup.appendChild(more);
-      zoomTo(drawNearbyBusinesses(data));
-      placeSpotMarker(lat, lon, popup);
-      statusText.textContent = "";
+
+      const area = drawNearbyBusinesses(data);
+      if (!keepView) zoomTo(area);
+      placeSpotMarker(data.lat, data.lon, popup, !keepView);
+      statusText.textContent = keepView ? "Score updated." : "";
+      // Show the map with the pins first; the full breakdown is just below it
+      if (spot.type === "address" && !keepView) $("map").scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (err) {
       if (requestId !== spotRequest) return;
-      if (spotMarker) spotMarker.remove();
+      if (spot.type === "point" && !keepView && spotMarker) spotMarker.remove();
       showError(err.message);
       statusText.textContent = "";
     }
   }
 
+  function scoreSpot(lat, lon) { return scoreSite({ type: "point", lat, lon }); }
+  function rescoreCurrentSpot() { if (lastSpot) scoreSite(lastSpot, { keepView: true }); }
+
   map.on("click", (event) => scoreSpot(event.latlng.lat, event.latlng.lng));
 
   $("address-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    clearError();
-    clearNearbyBusinesses();
     $("address-button").disabled = true;
-    statusText.textContent = "Pulling Census, map and traffic data. This can take up to 30 seconds…";
     try {
-      const data = await api("/score", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ address: $("address").value, business_type: businessSelect.value,
-                               weights: appliedWeights || undefined }),
-      });
-      lastSpot = { type: "address", address: $("address").value };
-      showSiteResult(data);
-      const popup = el("div");
-      popup.appendChild(el("div", data.matched_address));
-      const score = el("div", data.fit_score + " · " + data.tier, "popup-score");
-      score.style.color = colorFor(data.fit_score);
-      popup.appendChild(score);
-      zoomTo(drawNearbyBusinesses(data));
-      placeSpotMarker(data.lat, data.lon, popup);
-      statusText.textContent = "";
-      // Show the map with the pins first; the full breakdown is just below it
-      $("map").scrollIntoView({ behavior: "smooth", block: "start" });
-    } catch (err) {
-      showError(err.message);
-      statusText.textContent = "";
+      await scoreSite({ type: "address", address: $("address").value });
     } finally {
       $("address-button").disabled = false;
     }

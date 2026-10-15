@@ -47,6 +47,8 @@ class ScoreRequest(BaseModel):
     address: str
     business_type: str
     weights: FitWeights | None = None  # leave out to use the Charter weights
+    # IDs of nearby businesses the visitor marked "not a competitor" on the map
+    removed_places: list[str] = Field(default_factory=list, max_length=500)
 
 
 class PointScoreRequest(BaseModel):
@@ -54,6 +56,7 @@ class PointScoreRequest(BaseModel):
     lon: float
     business_type: str
     weights: FitWeights | None = None
+    removed_places: list[str] = Field(default_factory=list, max_length=500)
 
 
 @app.get("/")
@@ -105,7 +108,7 @@ def score_site(request: ScoreRequest):
     if location is None:
         raise HTTPException(status_code=422, detail="Could not match that address. Try including city and state.")
 
-    result = score_location(location, business_type, _weights_or_error(request.weights))
+    result = score_location(location, business_type, _weights_or_error(request.weights), request.removed_places)
     return {"address": request.address, **result}
 
 
@@ -119,7 +122,7 @@ def score_point(request: PointScoreRequest):
         raise HTTPException(status_code=503, detail="The Census location service didn't respond. Please try again.")
     if location is None:
         raise HTTPException(status_code=422, detail="That spot isn't in a U.S. census tract. Try clicking on land.")
-    return score_location(location, business_type, _weights_or_error(request.weights))
+    return score_location(location, business_type, _weights_or_error(request.weights), request.removed_places)
 
 
 @app.get("/cities")
@@ -154,17 +157,19 @@ def area_scores(city: str, business_type: str,
         raise HTTPException(status_code=503, detail="A Census or traffic data service didn't respond. Please try again in a minute.")
 
 
-def _nearby_businesses_for_map(places, business_type):
+def _nearby_businesses_for_map(places, business_type, removed_places=()):
     """
     Competitors and customer-bringing businesses within 1 mile, for the
     red and green pins on the map. Places farther than the business type's
     scoring radius (half a mile for walk-in businesses) are still shown,
-    marked as not counted in the score.
+    marked as not counted in the score. Places the visitor removed are
+    listed separately (gray pins) so they can be put back.
     """
     scoring_radius = SEARCH_RADIUS[business_type]
 
     def pin(place):
         return {
+            "id": place["id"],
             "name": place["name"],
             "category": place["category"],
             "lat": place["lat"],
@@ -182,14 +187,17 @@ def _nearby_businesses_for_map(places, business_type):
         "scoring_radius_miles": round(scoring_radius / ONE_MILE, 2),
         "competitors": [pin(p) for p in within_mile if p["category"] in COMPETITOR_CATEGORIES[business_type]],
         "synergistic": [pin(p) for p in within_mile if p["category"] in COMPLEMENT_WEIGHTS[business_type]],
+        "removed": [pin(p) for p in sorted(removed_places, key=lambda p: p["distance_meters"])
+                    if p["distance_meters"] <= ONE_MILE],
     }
 
 
-def score_location(location, business_type, weights=None):
+def score_location(location, business_type, weights=None, removed_ids=()):
     """
     The full site score for one spot. `location` comes from geocode_address
     (typed address) or locate_point (map click). `weights` optionally
-    replaces the Charter's Fit Score weights.
+    replaces the Charter's Fit Score weights. `removed_ids` are nearby
+    businesses the visitor marked "not a competitor"; they're left out.
     """
     warnings = []
 
@@ -224,10 +232,22 @@ def score_location(location, business_type, weights=None):
     except RuntimeError:
         places, places_source = None, "Census ZIP code estimate"
 
+    # Leave out businesses the visitor removed. (New lists - `places` is
+    # cached and shared, so it must not be changed in place.)
+    removed_ids = set(removed_ids)
+    removed_places = [p for p in places or [] if p["id"] in removed_ids]
+    if places is not None:
+        places = [p for p in places if p["id"] not in removed_ids]
+    removed_competitors = sum(
+        1 for p in removed_places
+        if p["category"] in COMPETITOR_CATEGORIES[business_type]
+        and p["distance_meters"] <= SEARCH_RADIUS[business_type]
+    )
+
     # Turn the raw data into 0-100 sub-scores
     demand_result = calculate_demand_score(business_type, tract, county, location["tract_land_sq_miles"])
     competition_result = calculate_competition_score(
-        business_type, places or [], zip_count, location["zip_land_sq_miles"]
+        business_type, places or [], zip_count, location["zip_land_sq_miles"], removed_competitors
     )
     traffic_result = calculate_traffic_score(site_street, frontage_roads, setback_roads, access_roads)
 
@@ -263,7 +283,7 @@ def score_location(location, business_type, weights=None):
     )
 
     return {
-        "nearby_businesses": _nearby_businesses_for_map(places, business_type),
+        "nearby_businesses": _nearby_businesses_for_map(places, business_type, removed_places),
         "warnings": warnings,
         "matched_address": location["matched_address"],
         "lat": location["lat"],
@@ -279,6 +299,7 @@ def score_location(location, business_type, weights=None):
         },
         "competition_details": {
             "score_based_on": competition_result["source"],
+            "competitors_removed_by_you": removed_competitors,
             "openstreetmap_competitors_in_radius": competition_result["competitor_count"],
             "census_competitors_in_zip": zip_count,
             "census_estimate_in_radius": competition_result["zip_estimate_in_radius"],

@@ -577,7 +577,7 @@ def get_nearby_places(lat, lon, radius_meters):
     the free public OpenStreetMap servers. Both serve OpenStreetMap data.
 
     Returns {"source": "Geoapify", "places": [...]}, where each place is like:
-        {"category": "cafe", "name": "Hubbard & Cravens", "lat": 39.77, "lon": -86.15,
+        {"id": "geoapify:51a...", "category": "cafe", "name": "Hubbard & Cravens", "lat": 39.77, "lon": -86.15,
          "address": "120 Main St" (or None), "distance_meters": 412}
     Raises RuntimeError if every source fails.
     """
@@ -659,6 +659,7 @@ def _places_from_geoapify(lat, lon, radius_meters):
                 continue  # unused, or already found by another group
             street = " ".join(filter(None, [props.get("housenumber"), props.get("street")]))
             places[props.get("place_id")] = {
+                "id": f"geoapify:{props.get('place_id')}",  # stable, so a visitor can remove this place
                 "category": category,
                 "name": props.get("name", "(unnamed)"),
                 "lat": props["lat"],
@@ -716,6 +717,7 @@ def _places_from_overpass(lat, lon, radius_meters):
         tags = element["tags"]
         street = " ".join(filter(None, [tags.get("addr:housenumber"), tags.get("addr:street")]))
         places.append({
+            "id": f"osm:{element['type']}/{element['id']}",  # stable, so a visitor can remove this place
             "category": category,
             "name": tags.get("name", "(unnamed)"),
             "lat": point["lat"],
