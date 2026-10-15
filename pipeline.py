@@ -8,6 +8,28 @@ from functools import lru_cache
 import requests
 
 
+# Government data services occasionally don't answer for a moment. Rather
+# than showing visitors an error, try once more after a short pause.
+RETRY_WAIT_SECONDS = 2
+
+
+def _request_with_retry(method, url, **kwargs):
+    """
+    Same as requests.request, but tries a second time if the service
+    doesn't respond or answers with a server error (status 500 or above).
+    Errors in our own request (status 400s) aren't retried - they'd fail again.
+    """
+    for attempt in (1, 2):
+        try:
+            response = requests.request(method, url, **kwargs)
+            if response.status_code < 500 or attempt == 2:
+                return response
+        except (requests.ConnectionError, requests.Timeout):
+            if attempt == 2:
+                raise
+        time.sleep(RETRY_WAIT_SECONDS)
+
+
 def geocode_address(address):
     """
     Converts a street address into latitude/longitude coordinates using
@@ -35,7 +57,7 @@ def geocode_address(address):
         "format": "json"
     }
 
-    response = requests.get(url, params=params, timeout=15)  # don't hang forever if Census is slow
+    response = _request_with_retry("GET", url, params=params, timeout=15)  # don't hang forever if Census is slow
     response.raise_for_status()  # crashes loudly if the request itself failed
 
     data = response.json()
@@ -66,7 +88,7 @@ def locate_point(lat, lon):
         "layers": GEOCODER_LAYERS,
         "format": "json"
     }
-    response = requests.get(url, params=params, timeout=15)
+    response = _request_with_retry("GET", url, params=params, timeout=15)
     response.raise_for_status()
 
     geographies = response.json().get("result", {}).get("geographies", {})
@@ -148,7 +170,7 @@ def _fetch_acs(geo_params):
     variables = [POPULATION, MEDIAN_INCOME, *AGE_20_TO_39, *AGE_65_PLUS]
     params = {"get": ",".join(variables), "key": _get_census_key(), **geo_params}
 
-    response = requests.get(ACS_URL, params=params, timeout=30)
+    response = _request_with_retry("GET", ACS_URL, params=params, timeout=30)
     response.raise_for_status()
 
     # The API answers with a table: first row is headers, then one row per place
@@ -211,7 +233,7 @@ def get_zip_business_count(zip_code, naics_codes):
         "NAICS2017": list(naics_codes),  # requests sends one NAICS2017= per code
         "key": _get_census_key()
     }
-    response = requests.get(CBP_URL, params=params, timeout=15)
+    response = _request_with_retry("GET", CBP_URL, params=params, timeout=15)
     response.raise_for_status()
 
     # Census replies with an empty body (status 204) when the ZIP has none
@@ -242,7 +264,7 @@ def get_zip_business_counts(zip_codes, naics_codes):
             "NAICS2017": list(naics_codes),
             "key": _get_census_key()
         }
-        response = requests.get(CBP_URL, params=params, timeout=30)
+        response = _request_with_retry("GET", CBP_URL, params=params, timeout=30)
         response.raise_for_status()
         if response.status_code == 204 or not response.text.strip():
             continue
@@ -280,7 +302,7 @@ INDIANA_CITIES = {
 def _tigerweb_query(layer, **params):
     params.setdefault("f", "json")
     # POST, because city outlines can be too long to fit in a web address
-    response = requests.post(f"{TIGERWEB_URL}/{layer}/query", data=params, timeout=60)
+    response = _request_with_retry("POST", f"{TIGERWEB_URL}/{layer}/query", data=params, timeout=60)
     response.raise_for_status()
     data = response.json()
     if "error" in data:
@@ -403,7 +425,7 @@ def get_nearby_roads(lat, lon, radius_meters, state_fips):
         "returnGeometry": "false",
         "f": "json"
     }
-    response = requests.get(url, params=params, timeout=20)
+    response = _request_with_retry("GET", url, params=params, timeout=20)
     response.raise_for_status()
     data = response.json()
     if "error" in data:
@@ -446,7 +468,7 @@ def get_roads_in_area(west, south, east, north, state_fips):
             "resultRecordCount": 2000,     # the server's page size limit
             "f": "json"
         }
-        response = requests.get(url, params=params, timeout=60)
+        response = _request_with_retry("GET", url, params=params, timeout=60)
         response.raise_for_status()
         data = response.json()
         if "error" in data:
