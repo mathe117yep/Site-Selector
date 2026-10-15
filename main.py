@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from scoring import (calculate_fit_score, calculate_demand_score, calculate_competition_score,
                      calculate_land_use_score, calculate_traffic_score, calculate_area_land_use_score,
                      normalize_business_type, DEMAND_WEIGHTS, ONE_MILE, COMPETITOR_NAICS, AREA_NAICS,
+                     COMPETITOR_CATEGORIES, COMPLEMENT_WEIGHTS, SEARCH_RADIUS,
                      FRONTAGE_RADIUS, SETBACK_RADIUS, ACCESS_RADIUS)
 from pipeline import (geocode_address, locate_point, get_tract_demographics, get_county_demographics,
                       get_nearby_places, get_zip_business_count, get_zip_business_counts, get_nearby_roads,
@@ -113,6 +114,37 @@ def area_scores(city: str, business_type: str):
         raise HTTPException(status_code=503, detail="A Census or traffic data service didn't respond. Please try again in a minute.")
 
 
+def _nearby_businesses_for_map(places, business_type):
+    """
+    Competitors and customer-bringing businesses within 1 mile, for the
+    red and green pins on the map. Places farther than the business type's
+    scoring radius (half a mile for walk-in businesses) are still shown,
+    marked as not counted in the score.
+    """
+    scoring_radius = SEARCH_RADIUS[business_type]
+
+    def pin(place):
+        return {
+            "name": place["name"],
+            "category": place["category"],
+            "lat": place["lat"],
+            "lon": place["lon"],
+            "address": place["address"],
+            "distance_miles": round(place["distance_meters"] / ONE_MILE, 2),
+            "counts_in_score": place["distance_meters"] <= scoring_radius,
+        }
+
+    within_mile = sorted((p for p in places or [] if p["distance_meters"] <= ONE_MILE),
+                         key=lambda p: p["distance_meters"])
+    return {
+        "available": places is not None,  # False when no map data source answered
+        "radius_miles": 1.0,
+        "scoring_radius_miles": round(scoring_radius / ONE_MILE, 2),
+        "competitors": [pin(p) for p in within_mile if p["category"] in COMPETITOR_CATEGORIES[business_type]],
+        "synergistic": [pin(p) for p in within_mile if p["category"] in COMPLEMENT_WEIGHTS[business_type]],
+    }
+
+
 def score_location(location, business_type):
     """
     The full site score for one spot. `location` comes from geocode_address
@@ -189,6 +221,7 @@ def score_location(location, business_type):
     )
 
     return {
+        "nearby_businesses": _nearby_businesses_for_map(places, business_type),
         "warnings": warnings,
         "matched_address": location["matched_address"],
         "lat": location["lat"],

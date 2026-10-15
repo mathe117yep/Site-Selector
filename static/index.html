@@ -116,6 +116,7 @@
     .legend .swatch { width: 12px; height: 9px; }
     .legend-note { display: none; }
   }
+  .pin-dot { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid #fff; flex: none; }
   .rank-pin {
     width: 26px; height: 26px; border-radius: 50%;
     background: var(--pin); color: #fff; border: 2px solid #fff;
@@ -396,7 +397,7 @@
         layer.on("mouseout", () => heatLayer.resetStyle(layer));
       },
     }).addTo(map);
-    map.fitBounds(heatLayer.getBounds(), { padding: [10, 10] });
+    zoomTo(heatLayer.getBounds());
     showLegend(breaks, Math.min(...scores), Math.max(...scores));
 
     // Numbered pins + the list below the map
@@ -553,11 +554,112 @@
     spotMarker.bindPopup(popupContent).openPopup();
   }
 
+  // ---------- Nearby businesses: 1-mile circle with red/green pins ----------
+
+  const COMPETITOR_PIN = "#d03b3b";   // red
+  const SYNERGY_PIN = "#0ca30c";      // green
+  const PLACE_LABELS = {
+    cafe: "Café / coffee shop", restaurant: "Restaurant", bar: "Bar / pub", salon: "Salon / barber",
+    clothing: "Clothing, shoe or jewelry store", gym: "Gym / fitness center", doctor: "Doctor's office / clinic",
+    pharmacy: "Pharmacy", hospital: "Hospital", other_medical: "Medical office (dentist, therapy, etc.)",
+    college: "College / university", school: "School", library: "Library", entertainment: "Theater / cinema",
+    hotel: "Hotel", park: "Park", office: "Office", retail: "Shop",
+  };
+
+  const nearbyLayer = L.layerGroup().addTo(map);
+  let pinKey = null;
+
+  function clearNearbyBusinesses() {
+    nearbyLayer.clearLayers();
+    if (pinKey) { pinKey.remove(); pinKey = null; }
+  }
+
+  function businessPopup(place, isCompetitor, scoringRadius) {
+    const box = el("div");
+    const label = PLACE_LABELS[place.category] || place.category;
+    box.appendChild(el("strong", place.name === "(unnamed)" ? label : place.name));
+    box.appendChild(el("div", label));
+    const role = el("div", isCompetitor ? "Competitor" : "Brings customers");
+    role.style.color = isCompetitor ? COMPETITOR_PIN : SYNERGY_PIN;
+    role.style.fontWeight = "600";
+    box.appendChild(role);
+    if (place.address) box.appendChild(el("div", place.address));
+    box.appendChild(el("div", place.distance_miles + " mi away"));
+    if (!place.counts_in_score) {
+      box.appendChild(el("div", "Outside the " + scoringRadius + "-mile scoring area, so not counted in the score", "note"));
+    }
+    return box;
+  }
+
+  function showPinKey(nearby) {
+    pinKey = L.control({ position: "bottomleft" });
+    pinKey.onAdd = () => {
+      const box = el("div", null, "legend");
+      [[COMPETITOR_PIN, "Competitor (" + nearby.competitors.length + ")"],
+       [SYNERGY_PIN, "Brings customers (" + nearby.synergistic.length + ")"]].forEach(([color, text]) => {
+        const row = el("div", null, "legend-row");
+        const dot = el("span", null, "pin-dot");
+        dot.style.background = color;
+        row.appendChild(dot);
+        row.appendChild(el("span", text));
+        box.appendChild(row);
+      });
+      const circleNote = nearby.scoring_radius_miles < nearby.radius_miles
+        ? "Circle = 1 mile. Dashed = " + nearby.scoring_radius_miles + "-mile scoring area. Tap a pin for details."
+        : "Circle = 1 mile. Tap a pin for details.";
+      box.appendChild(el("div", circleNote, "legend-note"));
+      return box;
+    };
+    pinKey.addTo(map);
+  }
+
+  // Draws the circle and pins for a site score; returns the circle's area
+  // so the map can zoom to it.
+  function drawNearbyBusinesses(data) {
+    clearNearbyBusinesses();
+    const nearby = data.nearby_businesses;
+    // interactive: false lets taps inside the circle reach the map (to score a new spot)
+    L.circle([data.lat, data.lon], {
+      radius: nearby.radius_miles * 1609, color: "#2f5bd3", weight: 2, fillOpacity: 0.04, interactive: false,
+    }).addTo(nearbyLayer);
+    if (nearby.scoring_radius_miles < nearby.radius_miles) {
+      L.circle([data.lat, data.lon], {
+        radius: nearby.scoring_radius_miles * 1609, color: "#2f5bd3", weight: 1.5, dashArray: "6 6",
+        fill: false, interactive: false,
+      }).addTo(nearbyLayer);
+    }
+    // Measured in meters, not from the circle's on-screen size (which is
+    // only a pixel or two wide when the map is zoomed out to all of Indiana)
+    const area = L.latLng(data.lat, data.lon).toBounds(nearby.radius_miles * 1609 * 2);
+    if (!nearby.available) return area;
+
+    // Green first, then red on top, so competitors are never hidden
+    [[nearby.synergistic, false], [nearby.competitors, true]].forEach(([places, isCompetitor]) => {
+      places.forEach(place => {
+        L.circleMarker([place.lat, place.lon], {
+          radius: 7, color: "#ffffff", weight: 1.5, fillOpacity: 0.95,
+          fillColor: isCompetitor ? COMPETITOR_PIN : SYNERGY_PIN,
+          bubblingMouseEvents: false,   // tapping a pin opens its details instead of scoring that spot
+        }).bindPopup(businessPopup(place, isCompetitor, nearby.scoring_radius_miles)).addTo(nearbyLayer);
+      });
+    });
+    showPinKey(nearby);
+    return area;
+  }
+
+  // Re-measure the map before zooming: if the page loaded while hidden or
+  // the window has been resized, the map's remembered size can be wrong.
+  function zoomTo(bounds) {
+    map.invalidateSize();
+    map.fitBounds(bounds, { padding: [10, 10] });
+  }
+
   let spotRequest = 0; // ignore answers to older taps if the user taps again
 
   async function scoreSpot(lat, lon) {
     clearError();
     const requestId = ++spotRequest;
+    clearNearbyBusinesses();
     placeSpotMarker(lat, lon, el("div", "Scoring this spot…"));
     statusText.textContent = "Scoring this spot… this can take up to 30 seconds.";
     try {
@@ -576,6 +678,7 @@
       const more = el("button", "See the full breakdown", "popup-link");
       more.addEventListener("click", () => $("results").scrollIntoView({ behavior: "smooth" }));
       popup.appendChild(more);
+      zoomTo(drawNearbyBusinesses(data));
       placeSpotMarker(lat, lon, popup);
       statusText.textContent = "";
     } catch (err) {
@@ -591,6 +694,7 @@
   $("address-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     clearError();
+    clearNearbyBusinesses();
     $("address-button").disabled = true;
     statusText.textContent = "Pulling Census, map and traffic data. This can take up to 30 seconds…";
     try {
@@ -605,10 +709,11 @@
       const score = el("div", data.fit_score + " · " + data.tier, "popup-score");
       score.style.color = colorFor(data.fit_score);
       popup.appendChild(score);
+      zoomTo(drawNearbyBusinesses(data));
       placeSpotMarker(data.lat, data.lon, popup);
-      map.setView([data.lat, data.lon], Math.max(map.getZoom(), 14));
       statusText.textContent = "";
-      $("results").scrollIntoView({ behavior: "smooth", block: "start" });
+      // Show the map with the pins first; the full breakdown is just below it
+      $("map").scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (err) {
       showError(err.message);
       statusText.textContent = "";

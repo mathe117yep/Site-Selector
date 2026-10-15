@@ -554,7 +554,8 @@ def get_nearby_places(lat, lon, radius_meters):
     the free public OpenStreetMap servers. Both serve OpenStreetMap data.
 
     Returns {"source": "Geoapify", "places": [...]}, where each place is like:
-        {"category": "cafe", "name": "Hubbard & Cravens", "distance_meters": 412}
+        {"category": "cafe", "name": "Hubbard & Cravens", "lat": 39.77, "lon": -86.15,
+         "address": "120 Main St" (or None), "distance_meters": 412}
     Raises RuntimeError if every source fails.
     """
     if _get_saved_key("GEOAPIFY_API_KEY"):
@@ -633,9 +634,13 @@ def _places_from_geoapify(lat, lon, radius_meters):
             category = _categorize_geoapify(props.get("categories", []))
             if category is None or props.get("place_id") in places:
                 continue  # unused, or already found by another group
+            street = " ".join(filter(None, [props.get("housenumber"), props.get("street")]))
             places[props.get("place_id")] = {
                 "category": category,
                 "name": props.get("name", "(unnamed)"),
+                "lat": props["lat"],
+                "lon": props["lon"],
+                "address": street or None,
                 "distance_meters": round(_distance_meters(lat, lon, props["lat"], props["lon"]))
             }
     return list(places.values())
@@ -685,9 +690,14 @@ def _places_from_overpass(lat, lon, radius_meters):
         point = element if "lat" in element else element.get("center")
         if point is None:
             continue
+        tags = element["tags"]
+        street = " ".join(filter(None, [tags.get("addr:housenumber"), tags.get("addr:street")]))
         places.append({
             "category": category,
-            "name": element["tags"].get("name", "(unnamed)"),
+            "name": tags.get("name", "(unnamed)"),
+            "lat": point["lat"],
+            "lon": point["lon"],
+            "address": street or None,
             "distance_meters": round(_distance_meters(lat, lon, point["lat"], point["lon"]))
         })
 
