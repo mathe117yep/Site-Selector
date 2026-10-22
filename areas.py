@@ -8,7 +8,7 @@ the math, which takes a moment.
 import math
 from functools import lru_cache
 
-from pipeline import (get_city_areas, get_all_tract_demographics, get_state_demographics,
+from pipeline import (get_city_areas, get_all_tract_demographics, get_state_demographics, get_named_neighborhoods,
                       get_zip_business_counts, get_roads_in_area, point_in_rings)
 from scoring import calculate_area_scores, AREA_NAICS, AREA_TRAFFIC_RADIUS
 
@@ -20,6 +20,43 @@ MIN_POPULATION_TO_SUGGEST = 300
 
 # Suggested neighborhoods' centers must be at least this far apart
 MIN_SUGGESTION_SPACING = 1600  # meters, about a mile
+
+# Labels for neighborhoods. A tract takes the name of the nearest named
+# neighborhood (OpenStreetMap) within this distance of its center...
+NAME_EXACT_DISTANCE = 1200   # meters -> "Broad Ripple"
+NAME_NEAR_DISTANCE = 3000    # meters -> "Near Broad Ripple"
+# ...otherwise it's labeled by its busiest road ("Near Keystone Ave").
+
+ROAD_WORDS = {"AV": "Ave", "AVE": "Ave", "ST": "St", "RD": "Rd", "BLVD": "Blvd", "DR": "Dr", "PKWY": "Pkwy",
+              "HWY": "Hwy", "LN": "Ln", "CT": "Ct", "PL": "Pl", "CIR": "Cir", "PIKE": "Pike", "WAY": "Way"}
+KEEP_UPPER = {"US", "SR", "N", "S", "E", "W", "NE", "NW", "SE", "SW"}
+
+
+def _road_label(road):
+    """'KEYSTONE AV' -> 'Keystone Ave', '38TH ST' -> '38th St', 'US 31' stays 'US 31'."""
+    words = []
+    for w in road.split():
+        if w in ROAD_WORDS:
+            words.append(ROAD_WORDS[w])
+        elif w in KEEP_UPPER or not w[0].isalpha():
+            words.append(w if w in KEEP_UPPER else w.lower())
+        else:
+            words.append(w[0] + w[1:].lower())
+    return " ".join(words)
+
+
+def _area_label(lat, lon, named, roads, tract_name):
+    """The everyday name for a tract: a neighborhood, else its main road, else the tract number."""
+    if named:
+        name, n_lat, n_lon = min(named, key=lambda n: _distance_to_path(lat, lon, [(n[2], n[1])]))
+        distance = _distance_to_path(lat, lon, [(n_lon, n_lat)])
+        if distance <= NAME_EXACT_DISTANCE:
+            return name
+        if distance <= NAME_NEAR_DISTANCE:
+            return f"Near {name}"
+    if roads:
+        return f"Near {_road_label(roads[0]['road'])}"
+    return tract_name
 
 METERS_PER_DEGREE_LAT = 110_574
 
@@ -120,11 +157,9 @@ def _load_city(city):
     # measure distances here instead.
     all_points = [point for t in tracts for ring in _feature_rings(t) for point in ring]
     pad = 0.01  # ~1 km, so roads just outside the city edge still count
-    roads = get_roads_in_area(
-        min(p[0] for p in all_points) - pad, min(p[1] for p in all_points) - pad,
-        max(p[0] for p in all_points) + pad, max(p[1] for p in all_points) + pad,
-        tracts[0]["properties"]["STATE"],
-    )
+    west, south = min(p[0] for p in all_points) - pad, min(p[1] for p in all_points) - pad
+    east, north = max(p[0] for p in all_points) + pad, max(p[1] for p in all_points) + pad
+    roads = get_roads_in_area(west, south, east, north, tracts[0]["properties"]["STATE"])
     road_index = _RoadIndex(roads, AREA_TRAFFIC_RADIUS)
     tract_roads = {
         (t["properties"]["COUNTY"], t["properties"]["TRACT"]):
@@ -135,6 +170,18 @@ def _load_city(city):
     zip_codes = tuple(sorted({z["zip_code"] for z in areas["zip_areas"]}))
     zip_counts = get_zip_business_counts(zip_codes, AREA_NAICS)
 
+    # Everyday names for each tract ("Broad Ripple" instead of "Census Tract 3207")
+    try:
+        named = get_named_neighborhoods(west, south, east, north)
+    except RuntimeError:
+        named = []  # no names today - labels fall back to road names
+    tract_labels = {
+        (t["properties"]["COUNTY"], t["properties"]["TRACT"]): _area_label(
+            t["properties"]["lat"], t["properties"]["lon"], named,
+            tract_roads[(t["properties"]["COUNTY"], t["properties"]["TRACT"])], t["properties"]["NAME"])
+        for t in tracts
+    }
+
     return {
         "tracts": tracts,
         "tract_demographics": tract_demographics,
@@ -142,6 +189,7 @@ def _load_city(city):
         "tract_zips": tract_zips,
         "tract_roads": tract_roads,
         "zip_counts": zip_counts,
+        "tract_labels": tract_labels,
     }
 
 
@@ -179,7 +227,8 @@ def score_city(city, business_type, weights=None):
             "type": "Feature",
             "geometry": tract["geometry"],
             "properties": {
-                "name": props["NAME"],
+                "name": props["NAME"],                                    # "Census Tract 3207"
+                "label": data["tract_labels"][(county, tract_code)],      # "Broad Ripple"
                 "lat": props["lat"],
                 "lon": props["lon"],
                 "zip_code": zip_area["zip_code"] if zip_area else None,
@@ -210,6 +259,7 @@ def score_city(city, business_type, weights=None):
     suggestions = [{
         "rank": rank,
         "name": f["properties"]["name"],
+        "label": f["properties"]["label"],
         "lat": f["properties"]["lat"],
         "lon": f["properties"]["lon"],
         "fit_score": f["properties"]["fit_score"],

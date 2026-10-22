@@ -682,6 +682,41 @@ def _places_from_geoapify(lat, lon, radius_meters):
     return list(places.values())
 
 
+NEIGHBORHOOD_CATEGORIES = "populated_place.neighbourhood,populated_place.suburb,populated_place.quarter"
+
+
+@lru_cache(maxsize=32)
+def get_named_neighborhoods(west, south, east, north):
+    """
+    Named neighborhoods inside a box (OpenStreetMap, via Geoapify), used to
+    label the heat map's suggestions "Broad Ripple" instead of a tract
+    number. Each is a point: [("Broad Ripple", 39.87, -86.14), ...].
+    Raises RuntimeError if Geoapify isn't available (so a failure isn't
+    cached); the caller falls back to road names.
+    """
+    key = _get_saved_key("GEOAPIFY_API_KEY")
+    if not key:
+        raise RuntimeError("No Geoapify key, so no neighborhood names.")
+    found = []
+    try:
+        for offset in range(0, 1000, 100):  # Geoapify answers 100 at a time
+            response = requests.get(GEOAPIFY_PLACES_URL, timeout=15, params={
+                "categories": NEIGHBORHOOD_CATEGORIES,
+                "filter": f"rect:{west},{south},{east},{north}",
+                "limit": 100,
+                "offset": offset,
+                "apiKey": key,
+            })
+            response.raise_for_status()
+            features = response.json()["features"]
+            found += [(p["name"], p["lat"], p["lon"]) for p in (f["properties"] for f in features) if p.get("name")]
+            if len(features) < 100:
+                return found
+    except (requests.RequestException, ValueError, KeyError):
+        raise RuntimeError("Neighborhood names aren't available right now.")
+    return found
+
+
 # --- Public OpenStreetMap servers (Overpass; free, no key, often busy) ---
 
 def _places_from_overpass(lat, lon, radius_meters):

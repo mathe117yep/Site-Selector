@@ -342,6 +342,17 @@
     if (className) node.className = className;
     return node;
   }
+  // "Census Tract 3207" -> "Census tract 3207" (shown under a neighborhood's name)
+  function tractLabel(name) { return name.replace("Census Tract", "Census tract"); }
+
+  // Federal traffic data spells roads in capitals: "KEYSTONE AV" -> "Keystone Ave", "38TH ST" -> "38th St"
+  const ROAD_WORDS = { AV: "Ave", AVE: "Ave", ST: "St", RD: "Rd", BLVD: "Blvd", DR: "Dr", PKWY: "Pkwy", HWY: "Hwy",
+                       LN: "Ln", CT: "Ct", PL: "Pl", CIR: "Cir", PIKE: "Pike", WAY: "Way" };
+  const KEEP_UPPER = new Set(["US", "SR", "N", "S", "E", "W", "NE", "NW", "SE", "SW"]);
+  function roadLabel(road) {
+    return road.split(/\s+/).map(w => ROAD_WORDS[w] || (KEEP_UPPER.has(w) ? w
+      : (/^[A-Z]/.test(w) ? w[0] + w.slice(1).toLowerCase() : w.toLowerCase()))).join(" ");
+  }
   function money(n) { return n == null ? "n/a" : "$" + n.toLocaleString(); }
   function num(n) { return n == null ? "n/a" : Math.round(n).toLocaleString(); }
   function businessLabel() { return businessSelect.options[businessSelect.selectedIndex].text; }
@@ -535,7 +546,7 @@
       },
       onEachFeature: (feature, layer) => {
         const p = feature.properties;
-        layer.bindTooltip(p.name.replace("Census Tract", "Neighborhood") + ": " + p.fit_score, { sticky: true });
+        layer.bindTooltip((p.label || p.name) + ": " + p.fit_score + " (" + tractLabel(p.name) + ")", { sticky: true });
         // (Tapping a neighborhood passes through to the map's click handler,
         // which scores the exact spot tapped.)
         layer.on("mouseover", () => layer.setStyle({ weight: 3, color: "#0b0b0b" }));
@@ -551,10 +562,11 @@
     data.suggestions.forEach(s => {
       const marker = L.marker([s.lat, s.lon], { icon: rankIcon(s.rank), keyboard: false, zIndexOffset: 1000 });
       const popup = el("div");
-      popup.appendChild(el("div", "#" + s.rank + " " + s.name.replace("Census Tract", "Neighborhood")));
+      popup.appendChild(el("strong", "#" + s.rank + " " + (s.label || s.name)));
+      popup.appendChild(el("div", tractLabel(s.name), "note"));
       popup.appendChild(el("div", s.fit_score, "popup-score"));
       popup.appendChild(el("div", breakdownText(s.breakdown)));
-      if (s.busiest_road) popup.appendChild(el("div", "Busiest road: " + s.busiest_road.road + " (" + num(s.busiest_road.vehicles_per_day) + "/day)"));
+      if (s.busiest_road) popup.appendChild(el("div", "Busiest road: " + roadLabel(s.busiest_road.road) + " (" + num(s.busiest_road.vehicles_per_day) + "/day)"));
       const scoreHere = el("button", "Score this spot in detail", "popup-link");
       scoreHere.addEventListener("click", () => scoreSpot(s.lat, s.lon));
       popup.appendChild(scoreHere);
@@ -564,9 +576,10 @@
       const item = el("li", null, "suggestion");
       const pin = el("div", String(s.rank), "rank-pin");
       const text = el("div");
-      text.appendChild(el("div", s.name.replace("Census Tract", "Neighborhood"), "suggestion-name"));
+      text.appendChild(el("div", s.label || s.name, "suggestion-name"));
+      text.appendChild(el("div", tractLabel(s.name), "suggestion-meta"));
       text.appendChild(el("div", breakdownText(s.breakdown), "suggestion-meta"));
-      if (s.busiest_road) text.appendChild(el("div", "Near " + s.busiest_road.road + " (" + num(s.busiest_road.vehicles_per_day) + " vehicles/day)", "suggestion-meta"));
+      if (s.busiest_road) text.appendChild(el("div", "Main road: " + roadLabel(s.busiest_road.road) + " (" + num(s.busiest_road.vehicles_per_day) + " vehicles/day)", "suggestion-meta"));
       item.appendChild(pin);
       item.appendChild(text);
       item.appendChild(el("div", s.fit_score, "suggestion-score"));
@@ -674,12 +687,12 @@
     const t = data.traffic_details;
     const trafficLines = [];
     if (t.frontage_based_on.road) {
-      trafficLines.push("Street at site: " + t.frontage_based_on.road.road + ", " +
+      trafficLines.push("Street at site: " + roadLabel(t.frontage_based_on.road.road) + ", " +
                         num(t.frontage_based_on.road.vehicles_per_day) + " vehicles/day (" + t.frontage_based_on.reason + ")");
     } else {
       trafficLines.push("Street at site: " + t.frontage_based_on.reason);
     }
-    t.busiest_roads_nearby.forEach(r => trafficLines.push("Nearby: " + r.road + ", " + num(r.vehicles_per_day) + " vehicles/day"));
+    t.busiest_roads_nearby.forEach(r => trafficLines.push("Nearby: " + roadLabel(r.road) + ", " + num(r.vehicles_per_day) + " vehicles/day"));
     details.appendChild(detailSection("Traffic & access", trafficLines, "2024 federal traffic counts. Highways are not counted."));
 
     const counts = data.land_use_details.complementary_places_nearby;
