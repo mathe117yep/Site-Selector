@@ -25,6 +25,16 @@ LOW_COVERAGE_PLACE_COUNT = 30
 # A map click this close to a counted road counts as being "on" that road
 ON_ROAD_RADIUS = 40  # meters
 
+# The tool covers Indiana only (state FIPS code 18): its cities, traffic data
+# and testing are all Indiana's. Other places get a clear message instead
+# of an untested score.
+SUPPORTED_STATE = "18"
+SUPPORTED_STATE_NAME = "Indiana"
+
+# Shortest and longest address text worth sending to the Census geocoder
+MIN_ADDRESS_LENGTH = 5
+MAX_ADDRESS_LENGTH = 200
+
 
 # These define exactly what a request to our app must look like.
 # If someone sends bad data (missing a field, wrong type), FastAPI
@@ -85,6 +95,14 @@ def _weights_or_error(weights):
     return as_dict
 
 
+def _supported_state_or_error(location, what):
+    if location["state"] != SUPPORTED_STATE:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{what} is outside {SUPPORTED_STATE_NAME}. Site Selector covers {SUPPORTED_STATE_NAME} locations only."
+        )
+
+
 def _business_type_or_error(raw_business_type):
     business_type = normalize_business_type(raw_business_type)
     if business_type is None:
@@ -99,14 +117,21 @@ def _business_type_or_error(raw_business_type):
 def score_site(request: ScoreRequest):
     business_type = _business_type_or_error(request.business_type)
 
+    address = " ".join(request.address.split())  # trim and collapse extra spaces
+    if len(address) < MIN_ADDRESS_LENGTH:
+        raise HTTPException(status_code=422, detail="Enter a street address, city and state, e.g. 200 E Washington St, Indianapolis, IN.")
+    if len(address) > MAX_ADDRESS_LENGTH:
+        raise HTTPException(status_code=422, detail=f"That address is too long. Enter just the street address, city and state (under {MAX_ADDRESS_LENGTH} characters).")
+
     # Turn the address into coordinates + census tract. Every live data
     # pull (Census, OSM, etc.) needs this, so it happens first.
     try:
-        location = geocode_address(request.address)
+        location = geocode_address(address)
     except requests.RequestException:
         raise HTTPException(status_code=503, detail="The Census address service didn't respond. Please try again.")
     if location is None:
         raise HTTPException(status_code=422, detail="Could not match that address. Try including city and state.")
+    _supported_state_or_error(location, "That address")
 
     result = score_location(location, business_type, _weights_or_error(request.weights), request.removed_places)
     return {"address": request.address, **result}
@@ -116,12 +141,15 @@ def score_site(request: ScoreRequest):
 def score_point(request: PointScoreRequest):
     """Scores a spot clicked on the map."""
     business_type = _business_type_or_error(request.business_type)
+    if not (-90 <= request.lat <= 90 and -180 <= request.lon <= 180):
+        raise HTTPException(status_code=422, detail="That isn't a valid map location. Tap a spot on the map in Indiana.")
     try:
         location = locate_point(request.lat, request.lon)
     except requests.RequestException:
         raise HTTPException(status_code=503, detail="The Census location service didn't respond. Please try again.")
     if location is None:
         raise HTTPException(status_code=422, detail="That spot isn't in a U.S. census tract. Try clicking on land.")
+    _supported_state_or_error(location, "That spot")
     return score_location(location, business_type, _weights_or_error(request.weights), request.removed_places)
 
 

@@ -58,6 +58,8 @@ def geocode_address(address):
     }
 
     response = _request_with_retry("GET", url, params=params, timeout=15)  # don't hang forever if Census is slow
+    if response.status_code == 400:
+        return None  # the geocoder rejected the text itself - treat it as "no match"
     response.raise_for_status()  # crashes loudly if the request itself failed
 
     data = response.json()
@@ -420,6 +422,8 @@ def get_nearby_roads(lat, lon, radius_meters, state_fips):
     have a traffic count. Returns the busiest first, one entry per road:
         [{"road": "WASHINGTON ST", "vehicles_per_day": 27610}, ...]
     """
+    if state_fips not in STATE_ABBREVIATIONS:
+        raise RuntimeError("Traffic data isn't available for this location.")
     url = HPMS_URL.format(state=STATE_ABBREVIATIONS[state_fips], year=HPMS_YEAR)
     params = {
         "geometry": f"{lon},{lat}",
@@ -457,6 +461,8 @@ def get_roads_in_area(west, south, east, north, state_fips):
         [{"road": "38TH ST", "vehicles_per_day": 32519,
           "points": [(lon, lat), (lon, lat), ...]}, ...]
     """
+    if state_fips not in STATE_ABBREVIATIONS:
+        raise RuntimeError("Traffic data isn't available for this location.")
     url = HPMS_URL.format(state=STATE_ABBREVIATIONS[state_fips], year=HPMS_YEAR)
     roads = []
     offset = 0

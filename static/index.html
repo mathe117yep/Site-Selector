@@ -264,7 +264,7 @@
       <form class="tool" id="address-form">
         <h2>2. Score a specific spot</h2>
         <label for="address">Address</label>
-        <input id="address" required autocomplete="street-address"
+        <input id="address" required maxlength="200" autocomplete="street-address"
                placeholder="e.g. 200 E Washington St, Indianapolis, IN">
         <button type="submit" id="address-button">Score this address</button>
         <p class="hint">Or tap anywhere on the map to score that spot.</p>
@@ -358,7 +358,10 @@
     const response = await fetch(url, options);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(typeof data.detail === "string" ? data.detail : "Something went wrong. Please try again.");
+      let message = "Something went wrong. Please try again.";
+      if (typeof data.detail === "string") message = data.detail;
+      else if (Array.isArray(data.detail) && data.detail.length) message = "Please check your input: " + data.detail[0].msg + ".";
+      throw new Error(message);
     }
     return data;
   }
