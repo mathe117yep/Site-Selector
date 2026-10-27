@@ -76,6 +76,7 @@
   .tool { border-top: 1px solid var(--border); padding-top: 14px; }
   @media (min-width: 760px) { .tool + .tool { border-left: 1px solid var(--border); padding-left: 16px; } }
   .hint { color: var(--muted); font-size: 0.9rem; margin: 8px 0 0; }
+  .place-pickers { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
   /* Advanced filters (custom Fit Score weights) */
   .advanced { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -263,8 +264,16 @@
     <div class="tools">
       <form class="tool" id="city-form">
         <h2>1. Find the best areas in a city</h2>
-        <label for="city">Indiana city</label>
-        <select id="city"><option>Indianapolis</option></select>
+        <div class="place-pickers">
+          <div>
+            <label for="state">State</label>
+            <select id="state"><option>Indiana</option></select>
+          </div>
+          <div>
+            <label for="city">City</label>
+            <select id="city"><option value="1836003">Indianapolis</option></select>
+          </div>
+        </div>
         <button type="submit" id="city-button">Show best areas</button>
         <p class="hint">Colors every neighborhood on the map and marks the top 5.</p>
       </form>
@@ -519,16 +528,30 @@
 
   // ---------- 1. Best areas in a city ----------
 
+  // State menu, then that state's cities (alphabetical; the largest city is picked first)
+  let citiesByState = {};
+
+  function fillCities(state) {
+    const cities = citiesByState[state] || [];
+    const select = $("city");
+    const sorted = [...cities].sort((a, b) => a.name.localeCompare(b.name));
+    select.replaceChildren(...sorted.map(c => { const o = el("option", c.name); o.value = c.id; return o; }));
+    if (cities.length) select.value = cities[0].id;  // the list arrives largest-first
+  }
+
   async function loadCities() {
     try {
-      const cities = await api("/cities");
-      const select = $("city");
-      select.replaceChildren(...cities.map(name => el("option", name)));
-      select.value = "Indianapolis";
+      citiesByState = await api("/cities");
+      const stateSelect = $("state");
+      stateSelect.replaceChildren(...Object.keys(citiesByState).sort().map(name => el("option", name)));
+      stateSelect.value = "Indiana";
+      fillCities("Indiana");
     } catch (err) {
       // Keep the default option; the error will show if they try to use it
     }
   }
+
+  $("state").addEventListener("change", () => fillCities($("state").value));
 
   function breakdownText(b) {
     return "Demand " + b.demand + " · Competition " + b.competition + " · Traffic " + b.traffic + " · Nearby businesses " + b.land_use;
@@ -607,9 +630,10 @@
   $("city-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     clearError();
-    const city = $("city").value;
+    const city = $("city").value;                 // the city's Census place code
+    const cityName = $("city").selectedOptions[0].textContent;
     $("city-button").disabled = true;
-    setMapLoading("Scoring every neighborhood in " + city + "… the first time for a city can take up to a minute.");
+    setMapLoading("Scoring every neighborhood in " + cityName + "… the first time for a city can take up to a minute.");
     try {
       const params = new URLSearchParams({ city, business_type: businessSelect.value });
       if (appliedWeights) WEIGHT_KEYS.forEach(key => params.set(key + "_weight", appliedWeights[key]));

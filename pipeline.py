@@ -2,6 +2,7 @@ import json
 import math
 import os
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
@@ -291,21 +292,11 @@ PLACES_LAYER = 28      # incorporated cities and towns
 TRACTS_LAYER = 8       # census tracts (our "neighborhoods")
 ZIP_AREAS_LAYER = 2    # ZIP code areas
 
-# Cities offered in the map's "Find best areas" menu. The value is the
-# name Census uses; Indianapolis is listed as "city (balance)" because it
-# shares a government with Marion County.
-INDIANA_CITIES = {
-    "Indianapolis": "Indianapolis city (balance)",
-    "Anderson": "Anderson", "Bloomington": "Bloomington", "Carmel": "Carmel",
-    "Columbus": "Columbus", "Elkhart": "Elkhart", "Evansville": "Evansville",
-    "Fishers": "Fishers", "Fort Wayne": "Fort Wayne", "Gary": "Gary",
-    "Greenwood": "Greenwood", "Hammond": "Hammond", "Jeffersonville": "Jeffersonville",
-    "Kokomo": "Kokomo", "Lafayette": "Lafayette", "Lawrence": "Lawrence",
-    "Mishawaka": "Mishawaka", "Muncie": "Muncie", "New Albany": "New Albany",
-    "Noblesville": "Noblesville", "Plainfield": "Plainfield", "Portage": "Portage",
-    "Richmond": "Richmond", "South Bend": "South Bend", "Terre Haute": "Terre Haute",
-    "West Lafayette": "West Lafayette", "Westfield": "Westfield", "Zionsville": "Zionsville",
-}
+# Cities offered in the heat map's menus, grouped by state:
+# {"Indiana": [{"name": "Indianapolis", "id": "1836003", "population": ...}, ...], ...}
+# "id" is the city's Census place code (GEOID). Built by tools/build_city_list.py.
+MIDWEST_CITIES = json.loads((Path(__file__).parent / "midwest_cities.json").read_text(encoding="utf-8"))
+CITY_BY_ID = {city["id"]: city["name"] for cities in MIDWEST_CITIES.values() for city in cities}
 
 
 def _tigerweb_query(layer, **params):
@@ -344,22 +335,22 @@ def _geojson_rings(geometry):
 
 
 @lru_cache(maxsize=64)
-def get_city_areas(city):
+def get_city_areas(city_id):
     """
     Loads a city's outline, its census tracts, and the ZIP code areas that
-    cover it. Returns:
+    cover it. city_id is the city's Census place code (see MIDWEST_CITIES).
+    Returns:
         {"tracts": [GeoJSON features, each with properties STATE, COUNTY,
                     TRACT, NAME, AREALAND, and center "lat"/"lon"],
          "zip_areas": [{"zip_code", "land_sq_miles", "rings"}, ...]}
     """
-    census_name = INDIANA_CITIES[city]
     place = _tigerweb_query(
-        PLACES_LAYER, where=f"STATE='18' AND BASENAME='{census_name}'",
+        PLACES_LAYER, where=f"GEOID='{city_id}'",
         outFields="NAME", returnGeometry="true", outSR=4326,
         maxAllowableOffset=0.0005  # simplify outlines to ~50 m detail - plenty for a map
     )
     if not place["features"]:
-        raise RuntimeError(f"Couldn't find the city limits for {city}.")
+        raise RuntimeError(f"Couldn't find the city limits for {CITY_BY_ID.get(city_id, city_id)}.")
     city_rings = place["features"][0]["geometry"]["rings"]
     city_shape = json.dumps({"rings": city_rings, "spatialReference": {"wkid": 4326}})
     shape_search = {"geometry": city_shape, "geometryType": "esriGeometryPolygon", "inSR": 4326,

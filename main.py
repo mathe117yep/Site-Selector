@@ -13,7 +13,7 @@ from scoring import (calculate_fit_score, calculate_demand_score, calculate_comp
                      FRONTAGE_RADIUS, SETBACK_RADIUS, ACCESS_RADIUS)
 from pipeline import (geocode_address, locate_point, get_tract_demographics, get_state_demographics,
                       get_nearby_places, get_zip_business_count, get_zip_business_counts, get_nearby_roads,
-                      INDIANA_CITIES)
+                      MIDWEST_CITIES, CITY_BY_ID)
 from areas import score_city
 
 app = FastAPI()
@@ -163,12 +163,15 @@ def score_point(request: PointScoreRequest):
 
 @app.get("/cities")
 def list_cities():
-    """Cities offered in the map's "Find best areas" menu."""
-    return sorted(INDIANA_CITIES)
+    """
+    Cities offered in the heat map's menus, grouped by state:
+    {"Illinois": [{"name": "Chicago", "id": "1714000", "population": ...}, ...], ...}
+    """
+    return MIDWEST_CITIES
 
 
 @app.get("/area_scores")
-def area_scores(city: str, business_type: str,
+def area_scores(city: str, business_type: str,  # city = Census place code from /cities
                 demand_weight: OptionalWeight = None, competition_weight: OptionalWeight = None,
                 traffic_weight: OptionalWeight = None, land_use_weight: OptionalWeight = None):
     """
@@ -183,8 +186,8 @@ def area_scores(city: str, business_type: str,
             raise HTTPException(status_code=422, detail="Give all four weights, or none.")
         weights = _weights_or_error(FitWeights(demand=demand_weight, competition=competition_weight,
                                                traffic=traffic_weight, land_use=land_use_weight))
-    if city not in INDIANA_CITIES:
-        raise HTTPException(status_code=422, detail=f"Unknown city. Try one of: {', '.join(sorted(INDIANA_CITIES))}")
+    if city not in CITY_BY_ID:
+        raise HTTPException(status_code=422, detail="Unknown city. Pick a state, then one of its cities.")
     try:
         return score_city(city, business_type, weights)
     except RuntimeError as error:

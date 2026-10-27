@@ -8,7 +8,7 @@ the math, which takes a moment.
 import math
 from functools import lru_cache
 
-from pipeline import (get_city_areas, get_all_tract_demographics, get_state_demographics, get_named_neighborhoods,
+from pipeline import (CITY_BY_ID, get_city_areas, get_all_tract_demographics, get_state_demographics, get_named_neighborhoods,
                       get_zip_business_counts, get_roads_in_area, point_in_rings)
 from scoring import calculate_area_scores, AREA_NAICS, AREA_TRAFFIC_RADIUS
 
@@ -128,9 +128,9 @@ def _distance_to_path(lat, lon, points):
 
 
 @lru_cache(maxsize=16)
-def _load_city(city):
+def _load_city(city_id):
     """Everything about a city that doesn't depend on the business type."""
-    areas = get_city_areas(city)
+    areas = get_city_areas(city_id)
     tracts = areas["tracts"]
 
     # Demographics: one Census request per county the city touches, plus
@@ -193,14 +193,14 @@ def _load_city(city):
     }
 
 
-def score_city(city, business_type, weights=None):
+def score_city(city_id, business_type, weights=None):
     """
     Returns a GeoJSON FeatureCollection (one feature per tract, ready for the
     map) with each tract's scores in its properties, plus "suggestions":
     the top neighborhoods, best first. `weights` optionally replaces the
     Charter's Fit Score weights (see scoring.normalize_fit_weights).
     """
-    data = _load_city(city)
+    data = _load_city(city_id)
     features = []
 
     for tract in data["tracts"]:
@@ -269,7 +269,7 @@ def score_city(city, business_type, weights=None):
 
     return {
         "type": "FeatureCollection",
-        "city": city,
+        "city": CITY_BY_ID.get(city_id, city_id),
         "business_type": business_type,
         "features": features,
         "suggestions": suggestions,
