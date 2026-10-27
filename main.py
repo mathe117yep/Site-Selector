@@ -29,11 +29,14 @@ LOW_COVERAGE_PLACE_COUNT = 30
 # A map click this close to a counted road counts as being "on" that road
 ON_ROAD_RADIUS = 40  # meters
 
-# The tool covers Indiana only (state FIPS code 18): its cities, traffic data
-# and testing are all Indiana's. Other places get a clear message instead
-# of an untested score.
-SUPPORTED_STATE = "18"
-SUPPORTED_STATE_NAME = "Indiana"
+# Site scores cover the 12 Midwest states (Census Bureau definition), keyed
+# by state FIPS code. Each has 2024 federal traffic data and was tested with
+# a downtown address. Other places get a clear message instead of an
+# untested score. (The neighborhood heat map's city list is Indiana's.)
+SUPPORTED_STATES = {
+    "17": "Illinois", "18": "Indiana", "19": "Iowa", "20": "Kansas", "26": "Michigan", "27": "Minnesota",
+    "29": "Missouri", "31": "Nebraska", "38": "North Dakota", "39": "Ohio", "46": "South Dakota", "55": "Wisconsin",
+}
 
 # Shortest and longest address text worth sending to the Census geocoder
 MIN_ADDRESS_LENGTH = 5
@@ -100,10 +103,11 @@ def _weights_or_error(weights):
 
 
 def _supported_state_or_error(location, what):
-    if location["state"] != SUPPORTED_STATE:
+    if location["state"] not in SUPPORTED_STATES:
         raise HTTPException(
             status_code=422,
-            detail=f"{what} is outside {SUPPORTED_STATE_NAME}. SiteScout covers {SUPPORTED_STATE_NAME} locations only."
+            detail=f"{what} is outside the Midwest. SiteScout covers the 12 Midwest states: "
+                   f"{', '.join(sorted(SUPPORTED_STATES.values()))}."
         )
 
 
@@ -146,7 +150,7 @@ def score_point(request: PointScoreRequest):
     """Scores a spot clicked on the map."""
     business_type = _business_type_or_error(request.business_type)
     if not (-90 <= request.lat <= 90 and -180 <= request.lon <= 180):
-        raise HTTPException(status_code=422, detail="That isn't a valid map location. Tap a spot on the map in Indiana.")
+        raise HTTPException(status_code=422, detail="That isn't a valid map location. Tap a spot on the map in the Midwest.")
     try:
         location = locate_point(request.lat, request.lon)
     except requests.RequestException:
@@ -327,7 +331,8 @@ def score_location(location, business_type, weights=None, removed_ids=()):
             "signals": demand_result["signals"],
             "people_per_sq_mile": demand_result["people_per_sq_mile"],
             "tract_median_income": tract["median_income"],
-            "state_median_income": state["median_income"]
+            "state_median_income": state["median_income"],
+            "state_name": SUPPORTED_STATES.get(location["state"], "the state")
         },
         "competition_details": {
             "score_based_on": competition_result["source"],

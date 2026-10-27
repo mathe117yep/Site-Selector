@@ -212,7 +212,7 @@
 <body>
 <main>
   <h1 class="brand"><img src="/static/logo-icon.png" alt="" width="52" height="52">SiteScout</h1>
-  <p class="subtitle">Find where a small business fits best in Indiana, using live Census, map and traffic data.</p>
+  <p class="subtitle">Find where a small business fits best in the Midwest, using live Census, map and traffic data.</p>
 
   <div class="card">
     <label for="business">Business type</label>
@@ -263,7 +263,7 @@
     <div class="tools">
       <form class="tool" id="city-form">
         <h2>1. Find the best areas in a city</h2>
-        <label for="city">City</label>
+        <label for="city">Indiana city</label>
         <select id="city"><option>Indianapolis</option></select>
         <button type="submit" id="city-button">Show best areas</button>
         <p class="hint">Colors every neighborhood on the map and marks the top 5.</p>
@@ -284,7 +284,7 @@
   <div class="card error" id="error" hidden></div>
 
   <div class="card map-card">
-    <div id="map" aria-label="Map of Indiana"></div>
+    <div id="map" aria-label="Map of the Midwest"></div>
     <div class="map-loading" id="map-loading" hidden></div>
   </div>
 
@@ -387,7 +387,7 @@
 
   // ---------- Map setup ----------
 
-  const map = L.map("map", { zoomControl: true }).setView([39.85, -86.25], 7);
+  const map = L.map("map", { zoomControl: true }).setView([42.5, -91.5], 5);
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -674,10 +674,10 @@
     const d = data.demand_details;
     details.appendChild(detailSection("Demand: who lives here", [
       num(d.people_per_sq_mile) + " residents per square mile",
-      "Median household income " + money(d.tract_median_income) + " (Indiana: " + money(d.state_median_income) + ")",
+      "Median household income " + money(d.tract_median_income) + " (" + (d.state_name || "state") + ": " + money(d.state_median_income) + ")",
       "Signals (0 to 100): density " + d.signals.density + ", income " + d.signals.income +
         ", ages 20–39 " + d.signals.young + ", ages 65+ " + d.signals.seniors,
-    ], "Based on Census data for this neighborhood (tract " + data.census_tract + ") compared with Indiana as a whole."));
+    ], "Based on Census data for this neighborhood (tract " + data.census_tract + ") compared with " + (d.state_name || "the state") + " as a whole."));
 
     const c = data.competition_details;
     const competitorLines = c.nearest_competitors.length
@@ -831,7 +831,7 @@
       }).addTo(nearbyLayer);
     }
     // Measured in meters, not from the circle's on-screen size (which is
-    // only a pixel or two wide when the map is zoomed out to all of Indiana)
+    // only a pixel or two wide when the map is zoomed out to the whole region)
     const area = L.latLng(data.lat, data.lon).toBounds(nearby.radius_miles * 1609 * 2);
     if (!nearby.available) return area;
 

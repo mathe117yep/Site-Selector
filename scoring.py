@@ -301,7 +301,7 @@ def street_core_name(street):
     Boils a street name down to its core so different spellings match:
     "200 E WASHINGTON ST" and "WASHINGTON ST" both become "WASHINGTON".
     """
-    words = street.upper().replace(".", "").split()
+    words = street.upper().replace(".", "").replace(",", " ").split()
     words = [w for w in words if not w.isdigit() and w not in DIRECTIONS and w not in STREET_SUFFIXES]
     return " ".join(words)
 
