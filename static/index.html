@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SiteScout</title>
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Raleway:wght@800&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <style>
   :root {
@@ -51,6 +55,10 @@
   }
   main { max-width: 1000px; margin: 0 auto; padding: 20px 16px 48px; }
   h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  /* Logo: the icon plus "SiteScout" in Raleway, close to the logo's lettering */
+  .brand { display: flex; align-items: center; gap: 10px; font-family: "Raleway", system-ui, sans-serif;
+           font-weight: 800; font-size: 2.1rem; letter-spacing: -0.01em; margin: 0 0 6px; }
+  .brand img { width: 52px; height: 52px; flex: none; }
   h2 { font-size: 1.05rem; margin: 0 0 10px; }
   .subtitle { color: var(--muted); margin: 0 0 16px; }
 
@@ -203,7 +211,7 @@
 </head>
 <body>
 <main>
-  <h1>SiteScout</h1>
+  <h1 class="brand"><img src="/static/logo-icon.png" alt="" width="52" height="52">SiteScout</h1>
   <p class="subtitle">Find where a small business fits best in Indiana, using live Census, map and traffic data.</p>
 
   <div class="card">

@@ -4,6 +4,7 @@ from typing import Annotated
 import requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from scoring import (calculate_fit_score, calculate_demand_score, calculate_competition_score,
                      calculate_land_use_score, calculate_traffic_score, calculate_area_land_use_score,
@@ -18,6 +19,9 @@ from areas import score_city
 app = FastAPI()
 
 STATIC_FOLDER = Path(__file__).parent / "static"
+
+# Images the page uses (the SiteScout logo icon and the browser-tab icon)
+app.mount("/static", StaticFiles(directory=STATIC_FOLDER), name="static")
 
 # Fewer mapped places than this within a mile triggers a data-quality warning
 LOW_COVERAGE_PLACE_COUNT = 30
