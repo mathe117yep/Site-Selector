@@ -285,6 +285,12 @@ def score_location(location, business_type, weights=None, removed_ids=()):
         if p["category"] in COMPETITOR_CATEGORIES[business_type]
         and p["distance_meters"] <= SEARCH_RADIUS[business_type]
     )
+    # Helpful businesses the visitor removed are simply left out of Land Use
+    removed_helpful = sum(
+        1 for p in removed_places
+        if p["category"] in COMPLEMENT_WEIGHTS[business_type]
+        and p["distance_meters"] <= SEARCH_RADIUS[business_type]
+    )
 
     # Turn the raw data into 0-100 sub-scores
     demand_result = calculate_demand_score(business_type, tract, state, location["tract_land_sq_miles"])
@@ -366,6 +372,7 @@ def score_location(location, business_type, weights=None, removed_ids=()):
         },
         "land_use_details": {
             "complementary_places_nearby": complementary_places,
+            "helpful_removed_by_you": removed_helpful,
             "nearby_places_source": places_source
         }
     }

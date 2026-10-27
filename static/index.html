@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Raleway:wght@800&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 <style>
   :root {
     --bg: #f6f7f9;
@@ -151,6 +152,12 @@
     .legend-note { display: none; }
   }
   .pin-dot { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid #fff; flex: none; }
+  /* Nearby-business pins: a colored circle (red / green / gray) holding an icon of the business type */
+  .biz-pin {
+    width: 24px; height: 24px; border-radius: 50%; border: 2px solid #fff; box-sizing: border-box;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 11px; box-shadow: 0 1px 3px rgba(0,0,0,.45);
+  }
   .rank-pin {
     width: 26px; height: 26px; border-radius: 50%;
     background: var(--pin); color: #fff; border: 2px solid #fff;
@@ -757,6 +764,11 @@
     const landLines = Object.keys(counts).length
       ? Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, v]) => v + " " + k.replace("_", " "))
       : ["See the note below"];
+    const helpfulRemoved = data.land_use_details.helpful_removed_by_you;
+    if (helpfulRemoved) {
+      landLines.push("You removed " + helpfulRemoved + " business" + (helpfulRemoved === 1 ? "" : "es") +
+                     " from this score (gray pins on the map)");
+    }
     const source = data.land_use_details.nearby_places_source;
     details.appendChild(detailSection("Nearby businesses that bring customers", landLines,
       Object.keys(counts).length
@@ -784,10 +796,11 @@
 
   const COMPETITOR_PIN = "#d03b3b";   // red
   const SYNERGY_PIN = "#0ca30c";      // green
-  const REMOVED_PIN = "#8a8f98";      // gray: competitors the visitor removed
+  const REMOVED_PIN = "#8a8f98";      // gray: businesses the visitor removed
 
-  // Competitors the visitor marked "not a competitor", per business type.
-  // Kept until the page is reloaded.
+  // Businesses the visitor removed from the score (a competitor that isn't
+  // one, or a neighbor that doesn't really bring customers), per business
+  // type. Kept until the page is reloaded.
   const removedByType = {};
   function removedPlaceIds() { return [...(removedByType[businessSelect.value] || [])]; }
   function setRemoved(placeId, removed) {
@@ -803,6 +816,23 @@
     college: "College / university", school: "School", library: "Library", entertainment: "Theater / cinema",
     hotel: "Hotel", park: "Park", office: "Office", retail: "Shop",
   };
+
+  const PLACE_ICONS = {
+    cafe: "fa-mug-hot", restaurant: "fa-utensils", bar: "fa-beer-mug-empty", salon: "fa-scissors",
+    clothing: "fa-shirt", gym: "fa-dumbbell", doctor: "fa-stethoscope", pharmacy: "fa-prescription-bottle-medical",
+    hospital: "fa-hospital", other_medical: "fa-kit-medical", college: "fa-graduation-cap", school: "fa-school",
+    library: "fa-book", entertainment: "fa-masks-theater", hotel: "fa-bed", park: "fa-tree",
+    office: "fa-briefcase", retail: "fa-bag-shopping",
+  };
+
+  function businessIcon(category, color) {
+    const icon = PLACE_ICONS[category] || "fa-store";
+    return L.divIcon({
+      className: "",
+      html: '<div class="biz-pin" style="background:' + color + '"><i class="fa-solid ' + icon + '"></i></div>',
+      iconSize: [24, 24], iconAnchor: [12, 12], popupAnchor: [0, -12],
+    });
+  }
 
   const nearbyLayer = L.layerGroup().addTo(map);
   let pinKey = null;
@@ -828,8 +858,9 @@
     if (!place.counts_in_score && role !== "removed") {
       box.appendChild(el("div", "Outside the " + scoringRadius + "-mile scoring area, so not counted in the score", "note"));
     }
-    if (role === "competitor") {
-      const remove = el("button", "Not a competitor? Remove it", "popup-action");
+    if (role === "competitor" || role === "synergy") {
+      const remove = el("button", role === "competitor" ? "Not a competitor? Remove it"
+                                                        : "Doesn't bring customers? Remove it", "popup-action");
       remove.addEventListener("click", () => setRemoved(place.id, true));
       box.appendChild(remove);
     }
@@ -857,8 +888,8 @@
         box.appendChild(row);
       });
       const circleNote = nearby.scoring_radius_miles < nearby.radius_miles
-        ? "Circle = 1 mile. Dashed = " + nearby.scoring_radius_miles + "-mile scoring area. Tap a pin for details."
-        : "Circle = 1 mile. Tap a pin for details.";
+        ? "Icons show the type of business. Circle = 1 mile; dashed = " + nearby.scoring_radius_miles + "-mile scoring area. Tap a pin for details."
+        : "Icons show the type of business. Circle = 1 mile. Tap a pin for details.";
       box.appendChild(el("div", circleNote, "legend-note"));
       return box;
     };
@@ -886,12 +917,13 @@
     if (!nearby.available) return area;
 
     // Gray and green first, then red on top, so competitors are never hidden
-    [[nearby.removed, "removed", REMOVED_PIN], [nearby.synergistic, "synergy", SYNERGY_PIN],
-     [nearby.competitors, "competitor", COMPETITOR_PIN]].forEach(([places, role, color]) => {
+    [[nearby.removed, "removed", REMOVED_PIN, 100], [nearby.synergistic, "synergy", SYNERGY_PIN, 200],
+     [nearby.competitors, "competitor", COMPETITOR_PIN, 300]].forEach(([places, role, color, layer]) => {
       places.forEach(place => {
-        L.circleMarker([place.lat, place.lon], {
-          radius: 7, color: "#ffffff", weight: 1.5, fillOpacity: 0.95, fillColor: color,
-          bubblingMouseEvents: false,   // tapping a pin opens its details instead of scoring that spot
+        // a marker (not a map shape), so tapping it opens its details instead of scoring that spot
+        L.marker([place.lat, place.lon], {
+          icon: businessIcon(place.category, color), zIndexOffset: layer, keyboard: false,
+          title: (PLACE_LABELS[place.category] || place.category) + ": " + place.name,
         }).bindPopup(businessPopup(place, role, nearby.scoring_radius_miles)).addTo(nearbyLayer);
       });
     });
