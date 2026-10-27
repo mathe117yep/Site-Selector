@@ -80,7 +80,7 @@ def home_page():
 @app.get("/health")
 def health_check():
     # Hosting services ping this to check the app is up
-    return {"message": "Site Selector API is running"}
+    return {"message": "SiteScout API is running"}
 
 
 def _weights_or_error(weights):
@@ -99,7 +99,7 @@ def _supported_state_or_error(location, what):
     if location["state"] != SUPPORTED_STATE:
         raise HTTPException(
             status_code=422,
-            detail=f"{what} is outside {SUPPORTED_STATE_NAME}. Site Selector covers {SUPPORTED_STATE_NAME} locations only."
+            detail=f"{what} is outside {SUPPORTED_STATE_NAME}. SiteScout covers {SUPPORTED_STATE_NAME} locations only."
         )
 
 
