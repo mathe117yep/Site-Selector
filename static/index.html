@@ -177,6 +177,13 @@
     background: #fff; border: 1px solid #c53030; border-radius: 6px; cursor: pointer;
   }
   .popup-action-undo { color: #2f5bd3; border-color: #2f5bd3; }
+  /* "Score this spot?" confirmation on a map tap */
+  .confirm-question { font-weight: 600; margin-bottom: 8px; text-align: center; }
+  .confirm-buttons { display: flex; gap: 8px; }
+  .confirm-buttons button { flex: 1; width: auto; padding: 7px 10px; font: 600 13px/1.2 system-ui, sans-serif;
+                            border-radius: 6px; cursor: pointer; }
+  .confirm-yes { background: #2f5bd3; color: #fff; border: 1px solid #2f5bd3; }
+  .confirm-no { background: #fff; color: #1d2330; border: 1px solid #b9c0cc; }
   .popup-link { color: var(--accent); cursor: pointer; text-decoration: underline; background: none; border: none; padding: 0; width: auto; font: inherit; }
 
   /* Suggestions list */
@@ -994,7 +1001,24 @@
   function scoreSpot(lat, lon) { return scoreSite({ type: "point", lat, lon }); }
   function rescoreCurrentSpot() { if (lastSpot) scoreSite(lastSpot, { keepView: true }); }
 
-  map.on("click", (event) => scoreSpot(event.latlng.lat, event.latlng.lng));
+  // A tap on the map asks first, so a near-miss on a business pin doesn't
+  // throw away the current score. "No" leaves everything as it was.
+  function askToScoreSpot(latlng) {
+    const box = el("div", null, "confirm-box");
+    box.appendChild(el("div", "Score this spot?", "confirm-question"));
+    const buttons = el("div", null, "confirm-buttons");
+    const yes = el("button", "Yes", "confirm-yes");
+    const no = el("button", "No", "confirm-no");
+    yes.addEventListener("click", () => { map.closePopup(); scoreSpot(latlng.lat, latlng.lng); });
+    no.addEventListener("click", () => map.closePopup());
+    buttons.appendChild(yes);
+    buttons.appendChild(no);
+    box.appendChild(buttons);
+    L.popup({ closeButton: false, minWidth: 150 }).setLatLng(latlng).setContent(box).openOn(map);
+    yes.focus();
+  }
+
+  map.on("click", (event) => askToScoreSpot(event.latlng));
 
   $("address-form").addEventListener("submit", async (event) => {
     event.preventDefault();
