@@ -1,6 +1,8 @@
+import datetime
 import json
 import math
 import os
+import re
 import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -100,7 +102,7 @@ def locate_point(lat, lon):
     return _build_location(lat, lon, geographies, label=f"Map point ({lat:.5f}, {lon:.5f})", street=None)
 
 
-GEOCODER_LAYERS = "Census Tracts,2020 Census ZIP Code Tabulation Areas"
+GEOCODER_LAYERS = "Census Tracts,2020 Census ZIP Code Tabulation Areas,Incorporated Places,Counties"
 
 
 def _build_location(lat, lon, geographies, label, street):
@@ -121,7 +123,11 @@ def _build_location(lat, lon, geographies, label, street):
         # AREALAND is in square meters; 2,589,988 sq meters = 1 sq mile
         "tract_land_sq_miles": tract["AREALAND"] / 2_589_988,
         "zip_code": zip_area["ZCTA5"] if zip_area else None,
-        "zip_land_sq_miles": zip_area["AREALAND"] / 2_589_988 if zip_area else None
+        "zip_land_sq_miles": zip_area["AREALAND"] / 2_589_988 if zip_area else None,
+        # The city the site is in (None outside city limits) and its county -
+        # used to find the police department whose crime figures apply
+        "place_name": (geographies.get("Incorporated Places") or [{}])[0].get("BASENAME"),
+        "county_name": (geographies.get("Counties") or [{}])[0].get("BASENAME"),
     }
 
 
@@ -379,6 +385,134 @@ def get_city_areas(city_id):
     } for feature in zip_data["features"]]
 
     return {"tracts": tracts, "zip_areas": zip_areas}
+
+
+# --- Crime (FBI Crime Data Explorer; free key from api.data.gov) ---
+#
+# Crime is reported by police agency, so it is city-wide (or county-wide for
+# sites outside city limits): it can't tell one neighborhood from another.
+
+FBI_CDE_URL = "https://api.usa.gov/crime/fbi/cde"
+
+
+def _fbi_get(path, params=None):
+    """One FBI Crime Data Explorer request. The key allows only a few requests
+    a second, so a "slow down" answer is retried after a short pause."""
+    key = _get_saved_key("DATA_GOV_API_KEY")
+    if not key:
+        raise RuntimeError("DATA_GOV_API_KEY is not set, so crime data isn't available.")
+    for attempt in range(4):
+        response = requests.get(f"{FBI_CDE_URL}/{path}", params={**(params or {}), "API_KEY": key}, timeout=30)
+        if response.status_code != 429:
+            break
+        time.sleep(1.5 * (attempt + 1))
+    if not response.ok:
+        raise RuntimeError(f"FBI crime data didn't answer (status {response.status_code}).")
+    return response.json()
+
+
+@lru_cache(maxsize=16)
+def get_police_agencies(state_fips):
+    """Every police agency the FBI lists for a state (cities, county sheriffs, ...)."""
+    data = _fbi_get(f"agency/byStateAbbr/{STATE_ABBREVIATIONS[state_fips]}")
+    return [agency for county in data.values() for agency in county]
+
+
+_PLACE_SUFFIX = re.compile(r"\s+(city|village|town|borough|municipality|charter township|township)$")
+
+
+def _simple_place(name):
+    """'Indianapolis city (balance)' -> 'indianapolis', 'Saint Paul' -> 'st paul'."""
+    name = name.lower().replace(".", "").strip()
+    if "(balance)" in name:  # only Census's "Indianapolis city (balance)" style names carry a type word
+        name = _PLACE_SUFFIX.sub("", name.replace("(balance)", "").strip())
+    name = re.sub(r"^saint ", "st ", name)
+    return " ".join(name.split())
+
+
+def _agency_place(agency_name):
+    """'St. Louis Metropolitan Police Department' -> 'st louis'."""
+    name = agency_name.lower().replace(".", "")
+    name = re.sub(r"^city of ", "", name)
+    name = re.split(r" (metropolitan |metro )?(police|department of public safety|public safety|division of police)", name)[0]
+    name = re.sub(r"^saint ", "st ", name)
+    return " ".join(name.split())
+
+
+def find_police_agency(state_fips, place_name, county_name):
+    """
+    The agency whose crime figures apply to a site: its city's police
+    department, or the county sheriff when it's outside city limits (or the
+    city isn't listed). Returns the FBI's agency record, or None.
+    """
+    if state_fips not in STATE_ABBREVIATIONS:
+        return None
+    agencies = get_police_agencies(state_fips)
+    if place_name:
+        wanted = _simple_place(place_name)
+        matches = [a for a in agencies if a.get("agency_type_name") == "City" and _agency_place(a["agency_name"]) == wanted]
+        if matches:
+            return sorted(matches, key=lambda a: not a.get("is_nibrs"))[0]  # prefer full (NIBRS) reporters
+    if county_name:
+        # the county's own sheriff or county police (e.g. "Riley County Police Department")
+        county = county_name.upper().replace(".", "")
+        county_agencies = [a for a in agencies if a.get("agency_type_name") == "County"
+                           and (a.get("counties") or "").upper().replace(".", "") == county]
+        if county_agencies:
+            return sorted(county_agencies, key=lambda a: not a.get("is_nibrs"))[0]
+    return None
+
+
+def _annual_rate(series):
+    """Sum of 12 monthly rates per 100,000 residents = the year's rate. None if any month is missing."""
+    values = [v for v in (series or {}).values() if v is not None]
+    return round(sum(values), 1) if len(values) == 12 else None
+
+
+@lru_cache(maxsize=1024)
+def get_agency_crime(ori, agency_name, state_name):
+    """
+    The latest full year of violent and property crime for one agency, with
+    the state's rates for comparison, all per 100,000 residents:
+        {"year": 2025, "violent": 937.0, "property": 3351.7,
+         "state_violent": 349.3, "state_property": 1506.2}
+    None if the agency didn't report a full year in the last two years.
+    """
+    last_year = datetime.date.today().year - 1
+    for year in (last_year, last_year - 1):
+        result = {"year": year}
+        for offense in ("violent", "property"):
+            data = _fbi_get(f"summarized/agency/{ori}/{offense}-crime", {"from": f"01-{year}", "to": f"12-{year}"})
+            rates = data.get("offenses", {}).get("rates", {})
+            agency_series = rates.get(f"{agency_name} Offenses")
+            if agency_series is None:  # the FBI's own name for the agency can differ slightly
+                agency_series = next((v for k, v in rates.items() if k.endswith(" Offenses")
+                                      and not k.startswith((state_name, "United States"))), None)
+            result[offense] = _annual_rate(agency_series)
+            result[f"state_{offense}"] = _annual_rate(rates.get(f"{state_name} Offenses"))
+        if result["violent"] is not None and result["property"] is not None:
+            return result
+    return None
+
+
+def get_site_crime(state_fips, place_name, county_name):
+    """
+    Crime figures for a site, or for a city on the heat map:
+        {"agency": "Carmel Police Department", "year": 2025, "violent": ..., "property": ...,
+         "state_violent": ..., "state_property": ...}
+    Returns {"agency": <name or None>, "available": False, "reason": ...} when there's nothing usable.
+    """
+    try:
+        agency = find_police_agency(state_fips, place_name, county_name)
+        if agency is None:
+            return {"available": False, "agency": None, "reason": "No police agency found for this location."}
+        figures = get_agency_crime(agency["ori"], agency["agency_name"], agency.get("state_name", ""))
+    except RuntimeError as error:
+        return {"available": False, "agency": None, "reason": str(error)}
+    if figures is None:
+        return {"available": False, "agency": agency["agency_name"],
+                "reason": f"{agency['agency_name']} didn't report a full year of crime data to the FBI recently."}
+    return {"available": True, "agency": agency["agency_name"], **figures}
 
 
 # --- Traffic counts (Federal Highway Administration, HPMS) ---

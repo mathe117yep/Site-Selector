@@ -8,10 +8,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from scoring import (calculate_fit_score, calculate_demand_score, calculate_competition_score,
                      calculate_land_use_score, calculate_traffic_score, calculate_area_land_use_score,
-                     normalize_business_type, normalize_fit_weights, DEMAND_WEIGHTS, ONE_MILE, COMPETITOR_NAICS, AREA_NAICS,
+                     normalize_business_type, normalize_fit_weights, calculate_safety_score, DEMAND_WEIGHTS, ONE_MILE, COMPETITOR_NAICS, AREA_NAICS,
                      COMPETITOR_CATEGORIES, COMPLEMENT_WEIGHTS, SEARCH_RADIUS,
                      FRONTAGE_RADIUS, SETBACK_RADIUS, ACCESS_RADIUS)
-from pipeline import (geocode_address, locate_point, get_tract_demographics, get_state_demographics,
+from pipeline import (get_site_crime, geocode_address, locate_point, get_tract_demographics, get_state_demographics,
                       get_nearby_places, get_zip_business_count, get_zip_business_counts, get_nearby_roads,
                       MIDWEST_CITIES, CITY_BY_ID)
 from areas import score_city
@@ -54,6 +54,7 @@ class FitWeights(BaseModel):
     competition: float = Field(25, ge=0, le=100)
     traffic: float = Field(25, ge=0, le=100)
     land_use: float = Field(20, ge=0, le=100)
+    safety: float = Field(0, ge=0, le=100)  # optional: city-wide crime, off unless a user turns it on
 
 
 # An optional 0-100 weight in a web address, e.g. /area_scores?...&demand_weight=40
@@ -173,7 +174,8 @@ def list_cities():
 @app.get("/area_scores")
 def area_scores(city: str, business_type: str,  # city = Census place code from /cities
                 demand_weight: OptionalWeight = None, competition_weight: OptionalWeight = None,
-                traffic_weight: OptionalWeight = None, land_use_weight: OptionalWeight = None):
+                traffic_weight: OptionalWeight = None, land_use_weight: OptionalWeight = None,
+                safety_weight: OptionalWeight = None):
     """
     Scores every neighborhood in a city, for the heat map. The four
     *_weight values are optional "Advanced filters"; give all four or none.
@@ -185,7 +187,8 @@ def area_scores(city: str, business_type: str,  # city = Census place code from 
         if any(w is None for w in given):
             raise HTTPException(status_code=422, detail="Give all four weights, or none.")
         weights = _weights_or_error(FitWeights(demand=demand_weight, competition=competition_weight,
-                                               traffic=traffic_weight, land_use=land_use_weight))
+                                               traffic=traffic_weight, land_use=land_use_weight,
+                                               safety=safety_weight or 0))
     if city not in CITY_BY_ID:
         raise HTTPException(status_code=422, detail="Unknown city. Pick a state, then one of its cities.")
     try:
@@ -316,13 +319,22 @@ def score_location(location, business_type, weights=None, removed_ids=()):
             except requests.RequestException:
                 pass  # keep the neutral 50
 
+    # City-wide crime (FBI): always shown as context, and part of the score
+    # only when the user gives Safety a weight in Advanced filters
+    crime = get_site_crime(location["state"], location.get("place_name"), location.get("county_name"))
+    safety = calculate_safety_score(crime)
+    if weights and weights.get("safety", 0) > 0 and safety is None:
+        warnings.append("Crime data isn't available for this location, so Safety counted as a neutral 50. "
+                        + crime.get("reason", ""))
+
     result = calculate_fit_score(
         demand_result["demand"], competition_result["competition"], traffic_result["traffic"], land_use,
-        weights
+        weights, safety
     )
 
     return {
         "nearby_businesses": _nearby_businesses_for_map(places, business_type, removed_places),
+        "crime_details": {**crime, "safety_score": safety},
         "warnings": warnings,
         "matched_address": location["matched_address"],
         "lat": location["lat"],

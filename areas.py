@@ -8,9 +8,9 @@ the math, which takes a moment.
 import math
 from functools import lru_cache
 
-from pipeline import (CITY_BY_ID, get_city_areas, get_all_tract_demographics, get_state_demographics, get_named_neighborhoods,
+from pipeline import (CITY_BY_ID, get_site_crime, get_city_areas, get_all_tract_demographics, get_state_demographics, get_named_neighborhoods,
                       get_zip_business_counts, get_roads_in_area, point_in_rings)
-from scoring import calculate_area_scores, AREA_NAICS, AREA_TRAFFIC_RADIUS
+from scoring import calculate_area_scores, calculate_safety_score, AREA_NAICS, AREA_TRAFFIC_RADIUS
 
 TOP_SUGGESTIONS = 5
 
@@ -190,6 +190,8 @@ def _load_city(city_id):
         "tract_roads": tract_roads,
         "zip_counts": zip_counts,
         "tract_labels": tract_labels,
+        # City-wide crime is the same for every tract in the city
+        "crime": get_site_crime(tracts[0]["properties"]["STATE"], CITY_BY_ID.get(city_id), None),
     }
 
 
@@ -201,6 +203,7 @@ def score_city(city_id, business_type, weights=None):
     Charter's Fit Score weights (see scoring.normalize_fit_weights).
     """
     data = _load_city(city_id)
+    safety = calculate_safety_score(data["crime"])
     features = []
 
     for tract in data["tracts"]:
@@ -221,6 +224,7 @@ def score_city(city_id, business_type, weights=None):
             zip_area["land_sq_miles"] if zip_area else None,
             roads,
             weights,
+            safety,
         )
 
         features.append({
@@ -270,6 +274,7 @@ def score_city(city_id, business_type, weights=None):
     return {
         "type": "FeatureCollection",
         "city": CITY_BY_ID.get(city_id, city_id),
+        "crime": {**data["crime"], "safety_score": safety},
         "business_type": business_type,
         "features": features,
         "suggestions": suggestions,

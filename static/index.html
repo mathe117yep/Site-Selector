@@ -255,9 +255,14 @@
         <input type="range" id="w-land_use" min="0" max="100" step="5">
         <output id="w-land_use-out" for="w-land_use"></output>
       </div>
+      <div class="weight-row">
+        <label for="w-safety">Safety<span class="weight-help">City-wide crime (FBI); off by default</span></label>
+        <input type="range" id="w-safety" min="0" max="100" step="5">
+        <output id="w-safety-out" for="w-safety"></output>
+      </div>
       <div class="advanced-actions">
         <button type="button" id="weights-apply">Apply</button>
-        <button type="button" class="secondary-button" id="weights-reset"title="Demand 30%, Competition 25%, Traffic 25%, Nearby businesses 20%">Reset to Charter weights</button>
+        <button type="button" class="secondary-button" id="weights-reset" title="Demand 30%, Competition 25%, Traffic 25%, Nearby businesses 20%, Safety 0%">Reset to Charter weights</button>
       </div>
     </div>
 
@@ -300,6 +305,7 @@
   <div class="card" id="suggestions-card" hidden>
     <h2 id="suggestions-title">Top areas</h2>
     <ol class="suggestions" id="suggestions"></ol>
+    <p class="note" id="city-crime"></p>
     <p class="note">Neighborhood scores are estimates from Census data for the whole neighborhood and its ZIP code.
       Tap a spot inside a neighborhood for a detailed score of that exact location.</p>
   </div>
@@ -336,6 +342,7 @@
     { key: "competition", label: "Competition",       weight: "25%", note: "higher = less competition" },
     { key: "traffic",     label: "Traffic & access",  weight: "25%" },
     { key: "land_use",    label: "Nearby businesses", weight: "20%" },
+    { key: "safety",      label: "Safety",            weight: "0%", note: "city-wide crime" },
   ];
 
   // Heat map colors: one hue (blue), light = lower score, dark = higher
@@ -451,8 +458,8 @@
 
   // ---------- Advanced filters: custom Fit Score weights ----------
 
-  const WEIGHT_KEYS = ["demand", "competition", "traffic", "land_use"];
-  const CHARTER_WEIGHTS = { demand: 30, competition: 25, traffic: 25, land_use: 20 };
+  const WEIGHT_KEYS = ["demand", "competition", "traffic", "land_use", "safety"];
+  const CHARTER_WEIGHTS = { demand: 30, competition: 25, traffic: 25, land_use: 20, safety: 0 };
   const WEIGHTS_STORAGE_KEY = "siteSelectorWeights";
   let appliedWeights = null;   // null = the Charter weights
   let lastSpot = null;         // what to rescore when weights change
@@ -493,6 +500,7 @@
   function loadWeights() {
     try {
       const saved = JSON.parse(localStorage.getItem(WEIGHTS_STORAGE_KEY));
+      if (saved && typeof saved.safety !== "number") saved.safety = 0;  // saved before Safety existed
       if (saved && WEIGHT_KEYS.every(key => typeof saved[key] === "number")) appliedWeights = saved;
     } catch (err) { /* nothing saved, or storage blocked */ }
     setSliders(appliedWeights || CHARTER_WEIGHTS);
@@ -624,6 +632,12 @@
     const custom = data.features.length && data.features[0].properties.custom_weights;
     $("suggestions-title").textContent = "Top areas for a " + businessLabel().toLowerCase() + " in " + data.city +
       (custom ? " (custom weights)" : "");
+    const cr = data.crime || {};
+    $("city-crime").textContent = cr.available
+      ? "City-wide crime (" + cr.agency + ", " + cr.year + "): violent " + num(cr.violent) + " per 100,000 (state " + num(cr.state_violent) +
+        "), property " + num(cr.property) + " (state " + num(cr.state_property) + "). Safety score " + cr.safety_score +
+        (data.features.length && data.features[0].properties.weights.safety > 0 ? ", included in these scores." : ", not included (turn on Safety in Advanced filters).")
+      : "City-wide crime: not available. " + (cr.reason || "");
     $("suggestions-card").hidden = data.suggestions.length === 0;
   }
 
@@ -675,13 +689,14 @@
     bars.replaceChildren();
     PARTS.forEach(part => {
       const score = data.breakdown[part.key];
+      if (part.key === "safety" && !(data.weights && data.weights.safety > 0)) return;  // off unless turned on
       const row = el("div", null, "bar-row");
       const label = el("div", null, "bar-label");
       const name = el("span", part.label + " ");
       const weight = data.weights ? data.weights[part.key] + "%" : part.weight;
       name.appendChild(el("span", "(" + weight + (part.note ? ", " + part.note : "") + ")", "bar-weight"));
       label.appendChild(name);
-      label.appendChild(el("span", score));
+      label.appendChild(el("span", score === null || score === undefined ? "n/a (counted as 50)" : score));
       const track = el("div", null, "track");
       const fill = el("div", null, "fill");
       fill.style.width = Math.max(0, Math.min(100, score)) + "%";
@@ -715,6 +730,17 @@
                          " (about " + num(c.census_estimate_in_radius) + " within the search area)");
     details.appendChild(detailSection("Competition: similar businesses nearby", competitorLines,
       "Score based on: " + c.score_based_on + "."));
+
+    const cr = data.crime_details || {};
+    if (cr.available) {
+      details.appendChild(detailSection("Crime: city-wide", [
+        "Violent crime: " + num(cr.violent) + " per 100,000 residents (" + (data.demand_details.state_name || "state") + ": " + num(cr.state_violent) + ")",
+        "Property crime: " + num(cr.property) + " per 100,000 residents (" + (data.demand_details.state_name || "state") + ": " + num(cr.state_property) + ")",
+        "Safety score: " + cr.safety_score + " of 100" + (data.weights && data.weights.safety > 0 ? "" : " (not in the Fit Score; turn on Safety in Advanced filters)"),
+      ], cr.agency + ", " + cr.year + " (FBI Crime Data Explorer). Crime is reported for the whole police jurisdiction, so it can't tell one neighborhood from another."));
+    } else {
+      details.appendChild(detailSection("Crime: city-wide", ["Not available for this location"], cr.reason || ""));
+    }
 
     const t = data.traffic_details;
     const trafficLines = [];

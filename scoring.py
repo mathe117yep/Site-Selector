@@ -419,7 +419,7 @@ def calculate_area_traffic_score(roads):
 
 
 def calculate_area_scores(business_type, tract, baseline, tract_land_sq_miles,
-                          zip_counts, zip_land_sq_miles, roads, weights=None):
+                          zip_counts, zip_land_sq_miles, roads, weights=None, safety=None):
     """
     All four sub-scores plus the overall score for one neighborhood.
     zip_counts is None if we couldn't tell which ZIP the tract is in; then
@@ -437,12 +437,32 @@ def calculate_area_scores(business_type, tract, baseline, tract_land_sq_miles,
         land_use = calculate_area_land_use_score(business_type, zip_counts, zip_land_sq_miles)
 
     traffic = calculate_area_traffic_score(roads)
-    return calculate_fit_score(demand, competition, traffic, land_use, weights)
+    return calculate_fit_score(demand, competition, traffic, land_use, weights, safety)
 
 
 # The weighted formula from the project Charter. Users can override these
-# with "Advanced filters" on the website.
-DEFAULT_FIT_WEIGHTS = {"demand": 0.30, "competition": 0.25, "traffic": 0.25, "land_use": 0.20}
+# with "Advanced filters" on the website. Safety (city-wide crime) is an
+# optional fifth factor: 0 by default, so the Charter formula is unchanged
+# unless a user turns it on.
+DEFAULT_FIT_WEIGHTS = {"demand": 0.30, "competition": 0.25, "traffic": 0.25, "land_use": 0.20, "safety": 0.0}
+
+
+def _crime_ratio_score(rate, state_rate):
+    """Same rate as the state = 50, half = 67, double = 33, no crime = 100."""
+    return 100 / (1 + rate / state_rate)
+
+
+def calculate_safety_score(crime):
+    """
+    Safety from pipeline.get_site_crime's city-wide figures: violent and
+    property crime count equally, each compared with the state's rate.
+    None when crime data isn't available.
+    """
+    if not crime or not crime.get("available") or not crime.get("state_violent") or not crime.get("state_property"):
+        return None
+    violent = _crime_ratio_score(crime["violent"], crime["state_violent"])
+    property_ = _crime_ratio_score(crime["property"], crime["state_property"])
+    return round(0.5 * violent + 0.5 * property_, 1)
 
 
 def normalize_fit_weights(weights):
@@ -453,13 +473,13 @@ def normalize_fit_weights(weights):
     """
     if weights is None:
         return dict(DEFAULT_FIT_WEIGHTS)
-    total = sum(weights[name] for name in DEFAULT_FIT_WEIGHTS)
+    total = sum(weights.get(name, 0) for name in DEFAULT_FIT_WEIGHTS)
     if total <= 0:
         raise ValueError("At least one weight must be above zero.")
-    return {name: weights[name] / total for name in DEFAULT_FIT_WEIGHTS}
+    return {name: weights.get(name, 0) / total for name in DEFAULT_FIT_WEIGHTS}
 
 
-def calculate_fit_score(demand, competition, traffic, land_use, weights=None):
+def calculate_fit_score(demand, competition, traffic, land_use, weights=None, safety=None):
     """
     Calculates the composite Fit Score for a candidate site. By default it
     uses the weighted formula from the project Charter:
@@ -467,12 +487,15 @@ def calculate_fit_score(demand, competition, traffic, land_use, weights=None):
         Fit Score = (0.30 * Demand) + (0.25 * Competition)
                   + (0.25 * Traffic/Access) + (0.20 * Complementary Land Use)
 
-    `weights` can replace those four numbers (see normalize_fit_weights).
+    `weights` can replace those numbers (see normalize_fit_weights).
+    `safety` is the optional crime sub-score; it only counts when its weight
+    is above 0, and missing safety data counts as a neutral 50.
     Each input should be a 0-100 sub-score.
     """
     w = normalize_fit_weights(weights)
     fit_score = (w["demand"] * demand) + (w["competition"] * competition) \
-        + (w["traffic"] * traffic) + (w["land_use"] * land_use)
+        + (w["traffic"] * traffic) + (w["land_use"] * land_use) \
+        + (w["safety"] * (safety if safety is not None else 50.0))
 
     if fit_score >= 75:
         tier = "Strong Fit"
@@ -488,7 +511,8 @@ def calculate_fit_score(demand, competition, traffic, land_use, weights=None):
             "demand": demand,
             "competition": competition,
             "traffic": traffic,
-            "land_use": land_use
+            "land_use": land_use,
+            "safety": safety
         },
         # The weights actually used, as percentages (e.g. {"demand": 30.0, ...})
         "weights": {name: round(share * 100, 1) for name, share in w.items()},
