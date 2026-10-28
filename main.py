@@ -3,7 +3,7 @@ from typing import Annotated
 
 import requests
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from scoring import (calculate_fit_score, calculate_demand_score, calculate_competition_score,
@@ -15,6 +15,7 @@ from pipeline import (get_site_crime, geocode_address, locate_point, get_tract_d
                       get_nearby_places, get_zip_business_count, get_zip_business_counts, get_nearby_roads,
                       MIDWEST_CITIES, CITY_BY_ID)
 from areas import score_city
+from report import build_report
 
 app = FastAPI()
 
@@ -83,6 +84,39 @@ def home_page():
     # makes browsers check for a newer version every time, so people see
     # updates right away instead of an old saved copy.
     return FileResponse(STATIC_FOLDER / "index.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/saved")
+def saved_searches_page():
+    # The "Saved searches" page (searches are stored in the visitor's browser)
+    return FileResponse(STATIC_FOLDER / "saved.html", headers={"Cache-Control": "no-cache"})
+
+
+# Most saved searches one report can hold
+MAX_REPORT_SITES = 10
+
+
+@app.post("/report")
+def create_report(searches: list[dict]):
+    """
+    Turns saved searches (as the Saved searches page stores them) into a PDF:
+    one site's report, or a comparison page followed by each site's report.
+    """
+    if not searches:
+        raise HTTPException(status_code=422, detail="Select at least one saved search.")
+    if len(searches) > MAX_REPORT_SITES:
+        raise HTTPException(status_code=422, detail=f"Select up to {MAX_REPORT_SITES} saved searches per report.")
+    for search in searches:
+        result = search.get("result") if isinstance(search, dict) else None
+        if not isinstance(result, dict) or "fit_score" not in result or "lat" not in result:
+            raise HTTPException(status_code=422, detail="One of the saved searches is incomplete. Try saving it again.")
+    try:
+        pdf = build_report(searches)
+    except Exception:
+        raise HTTPException(status_code=500, detail="The report couldn't be created. Try fewer searches, or save them again.")
+    name = "SiteScout comparison.pdf" if len(searches) > 1 else "SiteScout report.pdf"
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @app.get("/health")

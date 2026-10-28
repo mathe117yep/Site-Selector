@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Saved searches · SiteScout</title>
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Raleway:wght@800&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #5d6677; --border: #dfe3ea;
+    --accent: #2f5bd3; --accent-text: #ffffff; --strong: #1f8a4c; --moderate: #b7791f; --weak: #c53030;
+    --row-hover: #f2f5fb; --selected: #eaf0fd;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b1f27; --text: #e7eaf0; --muted: #9aa3b2; --border: #2c323d;
+      --accent: #6d8ff0; --accent-text: #0e1320; --strong: #4cc38a; --moderate: #e2b44f; --weak: #f07171;
+      --row-hover: #222733; --selected: #23304d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; padding: 20px 16px 120px; }
+  .top-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 10px; font-family: "Raleway", system-ui, sans-serif;
+           font-weight: 800; font-size: 2.1rem; letter-spacing: -0.01em; margin: 0; color: var(--text); text-decoration: none; }
+  .brand img { width: 52px; height: 52px; }
+  .back-link { color: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: 8px 14px;
+               text-decoration: none; font-weight: 600; white-space: nowrap; }
+  h2 { font-size: 1.3rem; margin: 22px 0 4px; }
+  .hint { color: var(--muted); font-size: 0.92rem; margin: 0 0 14px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 640px; }
+  th, td { padding: 11px 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-size: 0.85rem; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--row-hover); }
+  tbody tr.selected { background: var(--selected); }
+  td.check, th.check { width: 44px; }
+  input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+  .site-name { font-weight: 600; }
+  .sub { color: var(--muted); font-size: 0.85rem; }
+  .score { font-weight: 700; font-size: 1.1rem; }
+  .empty { padding: 28px; text-align: center; color: var(--muted); }
+  .empty a { color: var(--accent); }
+  .actions {
+    position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--border);
+    padding: 12px 16px; box-shadow: 0 -2px 10px rgba(0,0,0,.08);
+  }
+  .actions-inner { max-width: 1000px; margin: 0 auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .actions button { font: inherit; font-weight: 600; padding: 11px 18px; border-radius: 8px; cursor: pointer; }
+  #report-button { background: var(--accent); color: var(--accent-text); border: none; }
+  #report-button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #delete-button { background: transparent; color: var(--weak); border: 1px solid var(--weak); }
+  #delete-button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #status { color: var(--muted); font-size: 0.92rem; }
+  #status.error { color: var(--weak); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="top-bar">
+    <a class="brand" href="/"><img src="/static/logo-icon.png" alt="" width="52" height="52">SiteScout</a>
+    <a class="back-link" href="/"><i class="fa-solid fa-arrow-left"></i> Back to SiteScout</a>
+  </div>
+
+  <h2>Saved searches</h2>
+  <p class="hint">Check one search to print its report, or several to compare them. Saved searches are stored in this
+    browser only, so they won't appear on other devices, and clearing your browser data deletes them.</p>
+
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th class="check"><input type="checkbox" id="select-all" aria-label="Select all"></th>
+          <th>Site</th>
+          <th>Business type</th>
+          <th>Fit Score</th>
+          <th>Heat map</th>
+          <th>Saved</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>
+      No saved searches yet. <a href="/">Score a site</a>, then press "Save" at the bottom of its results.
+    </div>
+  </div>
+</main>
+
+<div class="actions">
+  <div class="actions-inner">
+    <button type="button" id="report-button" disabled>Select searches to create a report</button>
+    <button type="button" id="delete-button" disabled>Delete selected</button>
+    <span id="status" aria-live="polite"></span>
+  </div>
+</div>
+
+<script>
+  const SAVED_KEY = "siteScoutSaved";
+  const MAX_SITES = 10;
+  const $ = (id) => document.getElementById(id);
+
+  function el(tag, text, className) {
+    const node = document.createElement(tag);
+    if (text !== undefined && text !== null) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+  function colorFor(score) {
+    if (score >= 75) return "var(--strong)";
+    if (score >= 50) return "var(--moderate)";
+    return "var(--weak)";
+  }
+
+  function readSaved() {
+    try { return JSON.parse(localStorage.getItem(SAVED_KEY)) || []; } catch (err) { return null; }
+  }
+  function writeSaved(list) {
+    try { localStorage.setItem(SAVED_KEY, JSON.stringify(list)); return true; } catch (err) { return false; }
+  }
+
+  let saved = [];
+  const selected = new Set();
+
+  function render() {
+    const list = readSaved();
+    if (list === null) {
+      $("empty").hidden = false;
+      $("empty").textContent = "This browser isn't allowing SiteScout to store saved searches (storage is blocked).";
+      return;
+    }
+    saved = list;
+    for (const id of [...selected]) if (!saved.some(s => s.id === id)) selected.delete(id);
+    const tbody = $("rows");
+    tbody.replaceChildren();
+    $("empty").hidden = saved.length > 0;
+    saved.forEach(s => {
+      const r = s.result || {};
+      const tr = el("tr");
+      if (selected.has(s.id)) tr.classList.add("selected");
+
+      const checkCell = el("td", null, "check");
+      const box = el("input");
+      box.type = "checkbox";
+      box.checked = selected.has(s.id);
+      box.setAttribute("aria-label", "Select " + s.name);
+      box.addEventListener("click", (e) => e.stopPropagation());
+      box.addEventListener("change", () => toggle(s.id, box.checked));
+      checkCell.appendChild(box);
+
+      const site = el("td");
+      site.appendChild(el("div", s.name, "site-name"));
+      if (r.matched_address && r.matched_address !== s.name) site.appendChild(el("div", r.matched_address, "sub"));
+      if (r.custom_weights) site.appendChild(el("div", "Custom weights", "sub"));
+
+      const score = el("td");
+      const num = el("div", r.fit_score, "score");
+      num.style.color = colorFor(r.fit_score);
+      score.appendChild(num);
+      score.appendChild(el("div", r.tier, "sub"));
+
+      tr.appendChild(checkCell);
+      tr.appendChild(site);
+      tr.appendChild(el("td", s.business_label));
+      tr.appendChild(score);
+      tr.appendChild(el("td", s.heatmap ? s.heatmap.city : "No"));
+      tr.appendChild(el("td", s.saved_label));
+      tr.addEventListener("click", () => toggle(s.id, !selected.has(s.id)));
+      tbody.appendChild(tr);
+    });
+    updateActions();
+  }
+
+  function toggle(id, on) {
+    if (on) selected.add(id); else selected.delete(id);
+    render();
+  }
+
+  function updateActions(keepStatus = false) {
+    const n = selected.size;
+    const button = $("report-button");
+    button.disabled = n === 0 || n > MAX_SITES;
+    button.textContent = n === 0 ? "Select searches to create a report"
+      : n === 1 ? "Create Report"
+      : "Create Report and Compare (" + n + ")";
+    $("delete-button").disabled = n === 0;
+    $("select-all").checked = saved.length > 0 && n === saved.length;
+    $("select-all").indeterminate = n > 0 && n < saved.length;
+    const status = $("status");
+    if (n > MAX_SITES) {
+      status.className = "error";
+      status.textContent = "Select up to " + MAX_SITES + " searches per report.";
+    } else if (!keepStatus) {
+      status.className = "";
+      status.textContent = "";
+    }
+  }
+
+  $("select-all").addEventListener("change", (e) => {
+    selected.clear();
+    if (e.target.checked) saved.forEach(s => selected.add(s.id));
+    render();
+  });
+
+  $("delete-button").addEventListener("click", () => {
+    const n = selected.size;
+    if (!n || !confirm("Delete " + n + " saved search" + (n === 1 ? "" : "es") + "? This can't be undone.")) return;
+    writeSaved(saved.filter(s => !selected.has(s.id)));
+    selected.clear();
+    render();
+  });
+
+  $("report-button").addEventListener("click", async () => {
+    // keep the table's order (newest first)
+    const chosen = saved.filter(s => selected.has(s.id));
+    if (!chosen.length) return;
+    const button = $("report-button");
+    const status = $("status");
+    button.disabled = true;
+    status.className = "";
+    status.textContent = "Creating your report…";
+    try {
+      const response = await fetch("/report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(chosen),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(typeof data.detail === "string" ? data.detail : "The report couldn't be created. Please try again.");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = el("a");
+      link.href = url;
+      link.download = chosen.length > 1 ? "SiteScout comparison.pdf" : "SiteScout report - " + chosen[0].name.replace(/[\\/:*?"<>|]/g, "") + ".pdf";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      status.textContent = "Report downloaded. Open it to print or share.";
+    } catch (err) {
+      status.className = "error";
+      status.textContent = err.message === "Failed to fetch" ? "Couldn't reach SiteScout. Check your connection and try again." : err.message;
+    } finally {
+      updateActions(true);
+    }
+  });
+
+  render();
+</script>
+</body>
+</html>

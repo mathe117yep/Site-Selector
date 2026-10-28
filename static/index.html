@@ -60,6 +60,20 @@
   .brand { display: flex; align-items: center; gap: 10px; font-family: "Raleway", system-ui, sans-serif;
            font-weight: 800; font-size: 2.1rem; letter-spacing: -0.01em; margin: 0 0 6px; }
   .brand img { width: 52px; height: 52px; flex: none; }
+  .top-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .saved-link {
+    color: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: 8px 14px;
+    text-decoration: none; font-weight: 600; white-space: nowrap;
+  }
+  .saved-link:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .save-card h2 { margin-bottom: 6px; }
+  .save-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .save-row input[type="text"] { flex: 1 1 260px; margin: 0; }
+  .save-row button { width: auto; padding: 11px 18px; }
+  .check-label { display: flex; align-items: center; gap: 8px; font-weight: 400; margin: 10px 0 0; }
+  .check-label input { width: auto; margin: 0; }
+  .save-done { color: var(--strong); font-weight: 600; margin: 10px 0 0; }
+  .save-done a { color: var(--accent); }
   h2 { font-size: 1.05rem; margin: 0 0 10px; }
   .subtitle { color: var(--muted); margin: 0 0 16px; }
 
@@ -226,7 +240,10 @@
 </head>
 <body>
 <main>
-  <h1 class="brand"><img src="/static/logo-icon.png" alt="" width="52" height="52">SiteScout</h1>
+  <div class="top-bar">
+    <h1 class="brand"><img src="/static/logo-icon.png" alt="" width="52" height="52">SiteScout</h1>
+    <a class="saved-link" href="/saved"><i class="fa-solid fa-bookmark"></i> Saved searches <span id="saved-count"></span></a>
+  </div>
   <p class="subtitle">Find where a small business fits best in the Midwest, using live Census, map and traffic data.</p>
 
   <div class="card">
@@ -338,6 +355,19 @@
       <div id="bars"></div>
     </div>
     <div class="card" id="details"></div>
+    <div class="card save-card" id="save-card">
+      <h2><i class="fa-solid fa-bookmark"></i> Save this search</h2>
+      <p class="hint" style="margin: 0 0 10px;">Saved searches stay in this browser. Open "Saved searches" at the top
+        to print a report or compare sites.</p>
+      <div class="save-row">
+        <input type="text" id="save-name" maxlength="80" aria-label="Name for this saved search">
+        <button type="button" id="save-button">Save</button>
+      </div>
+      <label class="check-label" id="save-heat-row" hidden>
+        <input type="checkbox" id="save-heat" checked> <span id="save-heat-text">Include the heat map</span>
+      </label>
+      <p class="save-done" id="save-done" hidden></p>
+    </div>
   </section>
 
   <p class="note credits">
@@ -579,7 +609,10 @@
     return "Demand " + b.demand + " · Competition " + b.competition + " · Traffic " + b.traffic + " · Nearby businesses " + b.land_use;
   }
 
+  let lastHeat = null;   // the heat map on screen, for "Save this search"
+
   function showCityScores(data) {
+    lastHeat = data;
     if (heatLayer) heatLayer.remove();
     rankLayer.clearLayers();
 
@@ -974,6 +1007,7 @@
       if (requestId !== spotRequest) return;
       lastSpot = spot;
       showSiteResult(data);
+      prepareSaveCard(data);
 
       const popup = el("div");
       popup.appendChild(el("div", spot.type === "point" ? businessLabel() + " here:" : data.matched_address));
@@ -1030,6 +1064,90 @@
     }
   });
 
+  // ---------- Saved searches (stored in this browser) ----------
+
+  const SAVED_KEY = "siteScoutSaved";
+  let lastResult = null;
+
+  function readSaved() {
+    try { return JSON.parse(localStorage.getItem(SAVED_KEY)) || []; } catch (err) { return []; }
+  }
+  function showSavedCount() {
+    const n = readSaved().length;
+    $("saved-count").textContent = n ? "(" + n + ")" : "";
+  }
+
+  // "200 E WASHINGTON ST, INDIANAPOLIS, IN, 46204" -> "200 E Washington St, Indianapolis"
+  function defaultSaveName(data) {
+    if (data.matched_address.startsWith("Map point")) return data.matched_address;
+    const parts = data.matched_address.split(",").map(x => x.trim());
+    const title = t => t.toLowerCase().replace(/\b([a-z])/g, c => c.toUpperCase());
+    return title(parts[0]) + (parts[1] ? ", " + title(parts[1]) : "");
+  }
+
+  function prepareSaveCard(data) {
+    lastResult = data;
+    $("save-name").value = defaultSaveName(data);
+    $("save-done").hidden = true;
+    $("save-button").disabled = false;
+    const heatFits = lastHeat && lastHeat.business_type === data.business_type;
+    $("save-heat-row").hidden = !heatFits;
+    if (heatFits) {
+      $("save-heat-text").textContent = "Include the " + lastHeat.city + " heat map";
+      // checked when the site is inside the heat map's city, unchecked when it's elsewhere
+      $("save-heat").checked = heatLayer ? heatLayer.getBounds().contains([data.lat, data.lon]) : false;
+    }
+  }
+
+  // Keep what the report needs; round map coordinates (about 10 m) to save space
+  function slimGeometry(g) {
+    const r = pt => [Math.round(pt[0] * 1e4) / 1e4, Math.round(pt[1] * 1e4) / 1e4];
+    if (g.type === "Polygon") return { type: g.type, coordinates: g.coordinates.map(ring => ring.map(r)) };
+    return { type: g.type, coordinates: g.coordinates.map(poly => poly.map(ring => ring.map(r))) };
+  }
+
+  $("save-button").addEventListener("click", () => {
+    if (!lastResult) return;
+    const now = new Date();
+    const search = {
+      id: now.getTime().toString(36) + Math.random().toString(36).slice(2, 6),
+      name: $("save-name").value.trim() || defaultSaveName(lastResult),
+      business_type: lastResult.business_type,
+      business_label: businessLabel(),
+      saved_at: now.toISOString(),
+      saved_label: now.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }) + " at " +
+                   now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }),
+      result: lastResult,
+      heatmap: null,
+    };
+    if (!$("save-heat-row").hidden && $("save-heat").checked && lastHeat) {
+      search.heatmap = {
+        city: lastHeat.city, business_type: lastHeat.business_type, suggestions: lastHeat.suggestions, crime: lastHeat.crime,
+        features: lastHeat.features.map(f => ({ name: f.properties.name, label: f.properties.label,
+                                                fit_score: f.properties.fit_score, geometry: slimGeometry(f.geometry) })),
+      };
+    }
+    const saved = readSaved();
+    saved.unshift(search);
+    try {
+      localStorage.setItem(SAVED_KEY, JSON.stringify(saved));
+    } catch (err) {
+      $("save-done").hidden = false;
+      $("save-done").style.color = "var(--weak)";
+      $("save-done").textContent = search.heatmap
+        ? "This browser is out of room for saved searches. Try saving without the heat map, or delete some saved searches."
+        : "Couldn't save: this browser's storage is full or turned off. Delete some saved searches and try again.";
+      return;
+    }
+    $("save-done").hidden = false;
+    $("save-done").style.color = "";
+    $("save-done").replaceChildren(document.createTextNode("Saved. "), (() => {
+      const a = el("a", "View saved searches"); a.href = "/saved"; return a; })());
+    $("save-button").disabled = true;
+    showSavedCount();
+  });
+
+  showSavedCount();
   loadWeights();
   loadCities();
 </script>
