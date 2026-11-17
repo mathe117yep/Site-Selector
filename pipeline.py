@@ -697,6 +697,37 @@ def _categorize(tags):
     return None
 
 
+# Map listings stay up after a business closes unless someone marks them.
+# These OpenStreetMap tags (and names like "Joe's Cafe (closed)") mean the
+# place is no longer open, so it shouldn't count as a competitor or neighbor.
+CLOSED_NAME = re.compile(r"(permanently closed|closed|out of business)", re.IGNORECASE)
+CLOSED_PREFIXES = ("disused:", "was:", "abandoned:", "demolished:", "removed:")
+# "disused:amenity=cafe" means a former cafe; "was:name" is just an old name
+BUSINESS_KEYS = {"amenity", "shop", "leisure", "office", "healthcare", "tourism", "craft"}
+
+
+def _listing_info(tags, name):
+    """
+    Extra facts about one map listing, from its OpenStreetMap tags:
+      closed_reason - why we think it's closed, or None
+      brand         - the chain's name for chain locations, else None
+      last_checked  - when a mapper last confirmed it ("2024-05-02"), or None
+    """
+    closed_reason = None
+    hours = str(tags.get("opening_hours", "")).strip().lower()
+    if hours in ("closed", "off"):
+        closed_reason = "listed with opening hours \"closed\""
+    elif any(str(key).startswith(CLOSED_PREFIXES) and str(key).split(":", 1)[1] in BUSINESS_KEYS for key in tags):
+        closed_reason = "marked as a former business on the map"
+    elif tags.get("end_date"):
+        closed_reason = f"marked closed as of {tags['end_date']}"
+    elif name and CLOSED_NAME.search(str(name)):
+        closed_reason = "its map listing says it's closed"
+    last_checked = tags.get("check_date") or tags.get("survey:date")
+    return {"closed_reason": closed_reason, "brand": tags.get("brand"),
+            "last_checked": str(last_checked) if last_checked else None}
+
+
 def _distance_meters(lat1, lon1, lat2, lon2):
     """Straight-line distance between two points on Earth (haversine formula)."""
     earth_radius = 6_371_000
@@ -713,17 +744,23 @@ def get_nearby_places(lat, lon, radius_meters):
     Tries Geoapify first (fast and reliable, needs GEOAPIFY_API_KEY), then
     the free public OpenStreetMap servers. Both serve OpenStreetMap data.
 
-    Returns {"source": "Geoapify", "places": [...]}, where each place is like:
+    Returns {"source": "Geoapify", "places": [...], "pulled_at": "2026-11-17T15:04:05+00:00"},
+    where each place is like:
         {"id": "geoapify:51a...", "category": "cafe", "name": "Hubbard & Cravens", "lat": 39.77, "lon": -86.15,
-         "address": "120 Main St" (or None), "distance_meters": 412}
+         "address": "120 Main St" (or None), "distance_meters": 412,
+         "closed_reason": None, "brand": None, "last_checked": "2024-05-02"}
     Raises RuntimeError if every source fails.
     """
     if _get_saved_key("GEOAPIFY_API_KEY"):
         try:
-            return {"source": "Geoapify", "places": _places_from_geoapify(lat, lon, radius_meters)}
+            return {"source": "Geoapify", "places": _places_from_geoapify(lat, lon, radius_meters), "pulled_at": _now()}
         except (requests.RequestException, ValueError, KeyError):
             pass  # down, over its daily limit, etc. - try the public servers
-    return {"source": "OpenStreetMap", "places": _places_from_overpass(lat, lon, radius_meters)}
+    return {"source": "OpenStreetMap", "places": _places_from_overpass(lat, lon, radius_meters), "pulled_at": _now()}
+
+
+def _now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
 
 # --- Geoapify (OpenStreetMap data on reliable paid servers; free tier) ---
@@ -798,11 +835,12 @@ def _places_from_geoapify(lat, lon, radius_meters):
             places[props.get("place_id")] = {
                 "id": f"geoapify:{props.get('place_id')}",  # stable, so a visitor can remove this place
                 "category": category,
-                "name": props.get("name", "(unnamed)"),
+                "name": str(props.get("name", "(unnamed)")),
                 "lat": props["lat"],
                 "lon": props["lon"],
                 "address": street or None,
-                "distance_meters": round(_distance_meters(lat, lon, props["lat"], props["lon"]))
+                "distance_meters": round(_distance_meters(lat, lon, props["lat"], props["lon"])),
+                **_listing_info(props.get("datasource", {}).get("raw", {}), props.get("name")),
             }
     return list(places.values())
 
@@ -891,11 +929,12 @@ def _places_from_overpass(lat, lon, radius_meters):
         places.append({
             "id": f"osm:{element['type']}/{element['id']}",  # stable, so a visitor can remove this place
             "category": category,
-            "name": tags.get("name", "(unnamed)"),
+            "name": str(tags.get("name", "(unnamed)")),
             "lat": point["lat"],
             "lon": point["lon"],
             "address": street or None,
-            "distance_meters": round(_distance_meters(lat, lon, point["lat"], point["lon"]))
+            "distance_meters": round(_distance_meters(lat, lon, point["lat"], point["lon"])),
+            **_listing_info(tags, tags.get("name")),
         })
 
     return places

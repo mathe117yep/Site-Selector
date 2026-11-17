@@ -164,6 +164,118 @@ COMPLEMENT_WEIGHTS = {
     "doctor": {"pharmacy": 3, "hospital": 3, "other_medical": 1, "office": 0.5},
 }
 
+# Why each kind of neighbor brings customers to each business type. Shown
+# on the results and on the map's green pins, so a score can be checked
+# against common sense instead of taken on faith.
+COMPLEMENT_REASONS = {
+    "coffee_shop": {
+        "office": "office workers stop in before work and at lunch",
+        "college": "students study and meet over coffee",
+        "school": "parents and staff stop by around drop-off and pickup",
+        "library": "readers and students look for a nearby place to sit and work",
+        "gym": "people grab a drink before or after a workout",
+        "hotel": "travelers look for breakfast and coffee close by",
+        "retail": "shoppers take a coffee break while running errands",
+        "clothing": "shoppers browsing nearby stores stop in for a drink",
+    },
+    "restaurant": {
+        "office": "the weekday lunch crowd and after-work dinners",
+        "entertainment": "people eat before or after a show or movie",
+        "hotel": "travelers eat out for most of their meals",
+        "bar": "evening crowds go out for food and drinks together",
+        "college": "students eat out often",
+        "retail": "shoppers stop for a meal while out",
+        "clothing": "shoppers stop for a meal while out",
+    },
+    "salon": {
+        "retail": "shoppers combine errands with appointments",
+        "clothing": "fashion shoppers are also beauty customers",
+        "cafe": "clients grab a coffee before or after an appointment",
+        "gym": "fitness customers keep up regular grooming",
+    },
+    "boutique": {
+        "cafe": "café visitors linger and browse nearby shops",
+        "restaurant": "diners walk past and browse before or after meals",
+        "salon": "salon clients shop nearby while they're out",
+        "retail": "a shopping area draws browsers who visit several stores",
+        "hotel": "visitors shop while they're in town",
+    },
+    "gym": {
+        "office": "workers exercise before work, at lunch or after",
+        "college": "students are frequent gym-goers",
+        "park": "an active, outdoorsy crowd is already nearby",
+        "cafe": "members meet up for post-workout drinks",
+        "retail": "members combine workouts with errands",
+    },
+    "personal_trainer": {
+        "park": "space for outdoor sessions, and active residents nearby",
+        "office": "busy professionals hire trainers close to work",
+        "retail": "clients combine sessions with errands",
+    },
+    "doctor": {
+        "pharmacy": "patients fill prescriptions right after visits",
+        "hospital": "referrals and specialists cluster near hospitals",
+        "other_medical": "patients already come to this area for care",
+        "office": "employees can book visits near work",
+    },
+}
+
+# Why a competitor counts against the score, per business type
+COMPETITOR_REASON = {
+    "coffee_shop": "another café selling coffee and drinks to the same nearby customers",
+    "restaurant": "another restaurant competing for the same diners",
+    "salon": "another salon or barber competing for the same clients",
+    "boutique": "another clothing, shoe or jewelry store competing for the same shoppers",
+    "gym": "another gym competing for the same members",
+    "personal_trainer": "a gym that offers training to the same clients",
+    "doctor": "another doctor's office competing for the same patients",
+}
+
+# Two map listings with the same name and category this close together are
+# one business entered twice (often once as a point and once as its building)
+DUPLICATE_DISTANCE = 75  # meters
+
+
+def _name_key(name):
+    words = "".join(ch if ch.isalnum() else " " for ch in (name or "").lower()).split()
+    return " ".join(w for w in words if w != "the")
+
+
+def _distance(a, b):
+    """Approximate meters between two places (fine for short distances)."""
+    dy = (a["lat"] - b["lat"]) * 111_320
+    dx = (a["lon"] - b["lon"]) * 111_320 * math.cos(math.radians(a["lat"]))
+    return math.hypot(dx, dy)
+
+
+def _is_duplicate(kept_place, place):
+    if kept_place["category"] != place["category"]:
+        return False
+    if place["name"] == "(unnamed)" or kept_place["name"] == "(unnamed)":
+        return place["name"] == kept_place["name"] and _distance(kept_place, place) <= 10
+    return _name_key(kept_place["name"]) == _name_key(place["name"]) and _distance(kept_place, place) <= DUPLICATE_DISTANCE
+
+
+def screen_places(places):
+    """
+    Separates map listings that shouldn't count: businesses marked closed,
+    and duplicate listings of the same business. Returns (kept, filtered);
+    each filtered place gets a "filtered_reason" explaining why. Of two
+    duplicate listings, the one closer to the site is kept.
+    """
+    kept, filtered = [], []
+    for place in sorted(places, key=lambda p: p["distance_meters"]):
+        if place.get("closed_reason"):
+            filtered.append({**place, "filtered_reason": "Closed: " + place["closed_reason"]})
+            continue
+        twin = next((k for k in kept if _is_duplicate(k, place)), None)
+        if twin:
+            filtered.append({**place, "filtered_reason": "Duplicate: the same business is listed twice on the map"})
+            continue
+        kept.append(place)
+    return kept, filtered
+
+
 # Weighted complement total that earns a Land Use score of 50 - roughly 25
 # helpful businesses nearby. (Was 20, which took about 60: even downtown
 # Indianapolis only reached 60.)
@@ -226,15 +338,21 @@ def calculate_competition_score(business_type, places, zip_count=None, zip_land_
     # No competitors = 100, half point = 50, and it keeps falling from there
     score = 100 / (1 + pressure / COMPETITION_HALF_POINT[business_type])
 
+    counted = [
+        {"name": p["name"], "distance_miles": round(p["distance_meters"] / ONE_MILE, 2),
+         # how much this competitor counts: 100% next door, fading to 0% at the edge of the area
+         "counts_percent": round(_closeness(p["distance_meters"], radius) * 100),
+         "chain": p.get("brand"), "last_checked": p.get("last_checked")}
+        for p in competitors
+    ]
     return {
         "competition": round(score, 1),
         "source": source,
         "competitor_count": len(competitors),
         "zip_estimate_in_radius": round(zip_estimate, 1) if zip_estimate is not None else None,
-        "nearest_competitors": [
-            {"name": p["name"], "distance_miles": round(p["distance_meters"] / ONE_MILE, 2)}
-            for p in competitors[:5]
-        ]
+        "nearest_competitors": counted[:5],
+        "counted_competitors": counted[:25],
+        "why_competitors_count": COMPETITOR_REASON[business_type],
     }
 
 
@@ -244,17 +362,32 @@ def calculate_land_use_score(business_type, places):
 
     total = 0.0
     counts = {}
+    contributions = []
     for place in places:
         if place["category"] in weights and place["distance_meters"] <= radius:
-            total += weights[place["category"]] * _closeness(place["distance_meters"], radius)
+            points = weights[place["category"]] * _closeness(place["distance_meters"], radius)
+            total += points
             counts[place["category"]] = counts.get(place["category"], 0) + 1
+            contributions.append((points, place))
 
     # Nothing nearby = 0, half point = 50, approaching 100 as it gets busier
     score = 100 * total / (total + LAND_USE_HALF_POINT)
 
+    reasons = COMPLEMENT_REASONS[business_type]
+    contributions.sort(key=lambda c: -c[0])
     return {
         "land_use": round(score, 1),
-        "complementary_places_nearby": counts
+        "complementary_places_nearby": counts,
+        # One line per kind of neighbor: how many, how much each counts, and why it helps
+        "by_category": [
+            {"category": category, "count": count, "weight": weights[category], "why": reasons[category]}
+            for category, count in sorted(counts.items(), key=lambda kv: -kv[1] * weights[kv[0]])
+        ],
+        # The neighbors adding the most (the closest, most helpful kinds)
+        "top_contributors": [
+            {"name": p["name"], "category": p["category"], "distance_miles": round(p["distance_meters"] / ONE_MILE, 2)}
+            for _, p in contributions[:8]
+        ],
     }
 
 

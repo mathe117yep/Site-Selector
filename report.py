@@ -336,6 +336,14 @@ def site_pages(search, index=None):
                               ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
     story += [head, Spacer(1, 4), score_bars(r)]
 
+    conf = r.get("data_confidence")
+    if conf:
+        flagged = [x for x in conf.get("sources", []) if x.get("status") in ("limited", "missing")]
+        text = f"<b>Data confidence: {clean(conf.get('level'))}.</b> " + clean(conf.get("summary"))
+        if flagged:
+            text += " " + " ".join(f"{clean(x['part'])}: {clean(x['note'])}" for x in flagged)
+        story.append(P(text, muted))
+
     for w in r.get("warnings") or []:
         story.append(P("<b>Note:</b> " + clean(w), muted))
 
@@ -358,6 +366,9 @@ def site_pages(search, index=None):
                    + (f"; you removed {c['competitors_removed_by_you']}" if c.get("competitors_removed_by_you") else ""), small))
     if nearest:
         lines.append(P("Nearest: " + "; ".join(f"{clean(n['name'])} ({n['distance_miles']} mi)" for n in nearest[:5]), small))
+    if c.get("filtered_out"):
+        lines.append(P("Not counted (closed or duplicate listings): " + "; ".join(
+            clean(f["name"]) for f in c["filtered_out"]), small))
     lines.append(Spacer(1, 5))
     lines.append(P("<b>Traffic</b>", small_bold))
     fb = t.get("frontage_based_on") or {}
@@ -374,6 +385,14 @@ def site_pages(search, index=None):
                    or "Census ZIP code estimates (no map list for this spot)", small))
     if lu.get("helpful_removed_by_you"):
         lines.append(P(f"You removed {lu['helpful_removed_by_you']} from this score.", small))
+    lines.append(Spacer(1, 5))
+    z = r.get("zoning") or {}
+    lines.append(P("<b>Zoning</b>", small_bold))
+    if z.get("available"):
+        lines.append(P(f"{clean(z.get('district'))} ({clean(z.get('description'))}). {clean(z.get('explanation'))} "
+                       f"Source: {clean(z.get('source'))}. Not part of the Fit Score.", small))
+    else:
+        lines.append(P(clean(z.get("reason") or "Not checked for this saved search."), small))
     lines.append(Spacer(1, 5))
     lines.append(P("<b>Crime (city-wide)</b>", small_bold))
     if cr.get("available"):

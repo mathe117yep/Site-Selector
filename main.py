@@ -9,12 +9,13 @@ from pydantic import BaseModel, Field
 from scoring import (calculate_fit_score, calculate_demand_score, calculate_competition_score,
                      calculate_land_use_score, calculate_traffic_score, calculate_area_land_use_score,
                      normalize_business_type, normalize_fit_weights, calculate_safety_score, DEMAND_WEIGHTS, ONE_MILE, COMPETITOR_NAICS, AREA_NAICS,
-                     COMPETITOR_CATEGORIES, COMPLEMENT_WEIGHTS, SEARCH_RADIUS,
+                     COMPETITOR_CATEGORIES, COMPLEMENT_WEIGHTS, COMPLEMENT_REASONS, SEARCH_RADIUS, screen_places,
                      FRONTAGE_RADIUS, SETBACK_RADIUS, ACCESS_RADIUS)
 from pipeline import (get_site_crime, geocode_address, locate_point, get_tract_demographics, get_state_demographics,
                       get_nearby_places, get_zip_business_count, get_zip_business_counts, get_nearby_roads,
-                      MIDWEST_CITIES, CITY_BY_ID)
+                      MIDWEST_CITIES, CITY_BY_ID, ACS_YEAR, CBP_YEAR, HPMS_YEAR)
 from areas import score_city
+from zoning import get_zoning
 from report import build_report
 
 app = FastAPI()
@@ -233,7 +234,7 @@ def area_scores(city: str, business_type: str,  # city = Census place code from 
         raise HTTPException(status_code=503, detail="A Census or traffic data service didn't respond. Please try again in a minute.")
 
 
-def _nearby_businesses_for_map(places, business_type, removed_places=()):
+def _nearby_businesses_for_map(places, business_type, removed_places=(), filtered_places=()):
     """
     Competitors and customer-bringing businesses within 1 mile, for the
     red and green pins on the map. Places farther than the business type's
@@ -242,9 +243,13 @@ def _nearby_businesses_for_map(places, business_type, removed_places=()):
     listed separately (gray pins) so they can be put back.
     """
     scoring_radius = SEARCH_RADIUS[business_type]
+    reasons = COMPLEMENT_REASONS[business_type]
 
     def pin(place):
         return {
+            "why": reasons.get(place["category"]),
+            "chain": place.get("brand"),
+            "last_checked": place.get("last_checked"),
             "id": place["id"],
             "name": place["name"],
             "category": place["category"],
@@ -265,7 +270,97 @@ def _nearby_businesses_for_map(places, business_type, removed_places=()):
         "synergistic": [pin(p) for p in within_mile if p["category"] in COMPLEMENT_WEIGHTS[business_type]],
         "removed": [pin(p) for p in sorted(removed_places, key=lambda p: p["distance_meters"])
                     if p["distance_meters"] <= ONE_MILE],
+        # Closed or duplicate listings that were left out automatically (only
+        # the kinds that matter for this business type)
+        "filtered": [{**pin(p), "reason": p["filtered_reason"]} for p in filtered_places
+                     if p["distance_meters"] <= ONE_MILE
+                     and (p["category"] in COMPETITOR_CATEGORIES[business_type]
+                          or p["category"] in COMPLEMENT_WEIGHTS[business_type])],
     }
+
+
+def _data_confidence(location, tract, zip_count, places, places_source, pulled_at, access_roads, crime, weights,
+                     zoning):
+    """
+    Where each part of the score came from, how current it is, and whether
+    it loaded fully - so a user can judge how far to trust the score.
+    status: "live" (loaded normally), "limited" (loaded, but thin here) or
+    "missing" (not available; a fallback or neutral value was used).
+    """
+    sources = []
+
+    def add(part, source, as_of, status, note):
+        sources.append({"part": part, "source": source, "as_of": as_of, "status": status, "note": note})
+
+    add("Address match and neighborhood", "U.S. Census Bureau Geocoder", "Current", "live",
+        "Matched to census tract " + location["state"] + location["county"] + location["tract"] + ".")
+
+    if not tract.get("population"):
+        add("Who lives here (Demand)", "Census American Community Survey, 5-year", f"{ACS_YEAR - 4}–{ACS_YEAR}",
+            "limited", "Census reports no residents in this tract (often a business or industrial area), so density scores 0.")
+    elif tract.get("median_income") is None:
+        add("Who lives here (Demand)", "Census American Community Survey, 5-year", f"{ACS_YEAR - 4}–{ACS_YEAR}",
+            "limited", "Census withheld the median income for this tract, so income counted as average for the state.")
+    else:
+        add("Who lives here (Demand)", "Census American Community Survey, 5-year", f"{ACS_YEAR - 4}–{ACS_YEAR}",
+            "live", "Population, income and ages for this tract and its state.")
+
+    if zip_count is None:
+        add("Competitor count by ZIP code", "Census County Business Patterns", str(CBP_YEAR), "missing",
+            "No Census business count for this ZIP code, so Competition relies on the map alone.")
+    else:
+        add("Competitor count by ZIP code", "Census County Business Patterns", str(CBP_YEAR), "live",
+            f"{zip_count} competing businesses in ZIP {location['zip_code']}, used to catch businesses missing from the map.")
+
+    if places is None:
+        add("Nearby businesses (Competition and Land Use)", "OpenStreetMap", "Not available", "missing",
+            "The map data services didn't answer, so these were estimated from Census ZIP code counts.")
+    else:
+        checked = sum(1 for p in places if p.get("last_checked"))
+        source = "OpenStreetMap, via Geoapify" if places_source == "Geoapify" else "OpenStreetMap"
+        note = f"{len(places)} places within a mile."
+        if checked:
+            note += f" {checked} of them show the date a mapper last checked them in person."
+        if len(places) < LOW_COVERAGE_PLACE_COUNT:
+            add("Nearby businesses (Competition and Land Use)", source, "Pulled live", "limited",
+                note + " That's few for a mile, so the map is probably missing businesses here.")
+        else:
+            add("Nearby businesses (Competition and Land Use)", source, "Pulled live", "live", note)
+        sources[-1]["pulled_at"] = pulled_at
+
+    if access_roads:
+        add("Traffic counts", "Federal Highway Administration (HPMS)", str(HPMS_YEAR), "live",
+            "Average daily traffic on counted roads within a quarter mile.")
+    else:
+        add("Traffic counts", "Federal Highway Administration (HPMS)", str(HPMS_YEAR), "limited",
+            "No counted road within a quarter mile. Quiet streets usually aren't counted, so Traffic scores low.")
+
+    safety_counts = bool(weights and weights.get("safety", 0) > 0)
+    if crime.get("available"):
+        add("Crime (city-wide)", "FBI Crime Data Explorer", str(crime.get("year", "")), "live",
+            crime.get("agency", "") + (". Part of the Fit Score." if safety_counts else ". Shown for context, not in the Fit Score."))
+    else:
+        add("Crime (city-wide)", "FBI Crime Data Explorer", "Not available",
+            "missing" if safety_counts else "limited", crime.get("reason", ""))
+        if not safety_counts:
+            sources[-1]["status"] = "not_used"
+
+    if zoning.get("available"):
+        add("Zoning", zoning["source"], "Current (live city map)", "not_used",
+            f"Zoned {zoning['district']}. Shown next to the score, not part of it.")
+    else:
+        add("Zoning", "City zoning maps", "Not available", "not_used", zoning.get("reason", ""))
+
+    scored = [x for x in sources if x["status"] != "not_used"]
+    missing = sum(1 for x in scored if x["status"] == "missing")
+    limited = sum(1 for x in scored if x["status"] == "limited")
+    if missing == 0 and limited == 0:
+        level, summary = "High", "Every data source loaded fully for this spot."
+    elif missing == 0 and limited == 1:
+        level, summary = "Medium", "One data source is thin for this spot (see below)."
+    else:
+        level, summary = "Low", "Some data is missing or thin for this spot, so treat this score as a rough guide."
+    return {"level": level, "summary": summary, "sources": sources}
 
 
 def score_location(location, business_type, weights=None, removed_ids=()):
@@ -304,9 +399,19 @@ def score_location(location, business_type, weights=None, removed_ids=()):
     # estimates instead of failing.
     try:
         nearby = get_nearby_places(location["lat"], location["lon"], ONE_MILE)
-        places, places_source = nearby["places"], nearby["source"]
+        places, places_source, pulled_at = nearby["places"], nearby["source"], nearby.get("pulled_at")
     except RuntimeError:
-        places, places_source = None, "Census ZIP code estimate"
+        places, places_source, pulled_at = None, "Census ZIP code estimate", None
+
+    # Leave out listings for businesses marked closed, and duplicate listings
+    filtered_places = []
+    if places is not None:
+        places, filtered_places = screen_places(places)
+    radius = SEARCH_RADIUS[business_type]
+    filtered_competitors = [p for p in filtered_places
+                            if p["category"] in COMPETITOR_CATEGORIES[business_type] and p["distance_meters"] <= radius]
+    filtered_helpful = [p for p in filtered_places
+                        if p["category"] in COMPLEMENT_WEIGHTS[business_type] and p["distance_meters"] <= radius]
 
     # Leave out businesses the visitor removed. (New lists - `places` is
     # cached and shared, so it must not be changed in place.)
@@ -337,6 +442,8 @@ def score_location(location, business_type, weights=None, removed_ids=()):
         land_use_result = calculate_land_use_score(business_type, places)
         land_use = land_use_result["land_use"]
         complementary_places = land_use_result["complementary_places_nearby"]
+        helpful_by_category = land_use_result["by_category"]
+        top_helpful = land_use_result["top_contributors"]
         # OpenStreetMap coverage varies a lot by neighborhood. Very few
         # mapped places usually means missing data, not an empty area.
         if len(places) < LOW_COVERAGE_PLACE_COUNT:
@@ -351,6 +458,7 @@ def score_location(location, business_type, weights=None, removed_ids=()):
             "from Census ZIP code counts. Try again in a minute for exact nearby businesses."
         )
         complementary_places = {}
+        helpful_by_category, top_helpful = [], []
         land_use = 50.0
         if location["zip_code"]:
             try:
@@ -372,8 +480,16 @@ def score_location(location, business_type, weights=None, removed_ids=()):
         weights, safety
     )
 
+    # Zoning (covered cities only): shown beside the score, not part of it
+    zoning = get_zoning(location, business_type)
+    if zoning.get("available") and zoning["status"] == "not_allowed":
+        warnings.append("Zoning: " + zoning["explanation"])
+
     return {
-        "nearby_businesses": _nearby_businesses_for_map(places, business_type, removed_places),
+        "nearby_businesses": _nearby_businesses_for_map(places, business_type, removed_places, filtered_places),
+        "data_confidence": _data_confidence(location, tract, zip_count, places, places_source, pulled_at,
+                                            access_roads, crime, weights, zoning),
+        "zoning": zoning,
         "crime_details": {**crime, "safety_score": safety},
         "warnings": warnings,
         "matched_address": location["matched_address"],
@@ -396,7 +512,12 @@ def score_location(location, business_type, weights=None, removed_ids=()):
             "census_competitors_in_zip": zip_count,
             "census_estimate_in_radius": competition_result["zip_estimate_in_radius"],
             "zip_code": location["zip_code"],
-            "nearest_competitors": competition_result["nearest_competitors"]
+            "nearest_competitors": competition_result["nearest_competitors"],
+            "counted_competitors": competition_result["counted_competitors"],
+            "why_competitors_count": competition_result["why_competitors_count"],
+            "scoring_radius_miles": round(radius / ONE_MILE, 2),
+            "filtered_out": [{"name": p["name"], "distance_miles": round(p["distance_meters"] / ONE_MILE, 2),
+                              "reason": p["filtered_reason"]} for p in filtered_competitors],
         },
         "traffic_details": {
             "frontage_score": traffic_result["frontage_score"],
@@ -407,6 +528,9 @@ def score_location(location, business_type, weights=None, removed_ids=()):
         "land_use_details": {
             "complementary_places_nearby": complementary_places,
             "helpful_removed_by_you": removed_helpful,
-            "nearby_places_source": places_source
+            "nearby_places_source": places_source,
+            "by_category": helpful_by_category,
+            "top_contributors": top_helpful,
+            "filtered_out_count": len(filtered_helpful),
         }
     }

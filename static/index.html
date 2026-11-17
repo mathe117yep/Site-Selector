@@ -233,6 +233,22 @@
   details ul { margin: 8px 0 0; padding-left: 20px; }
   details li { margin: 2px 0; }
   .note { color: var(--muted); font-size: 0.9rem; }
+  .confidence-badge {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 3px 10px;
+    border-radius: 999px; border: 1px solid currentColor; font-size: 0.85rem; font-weight: 600;
+    background: transparent; cursor: pointer; font-family: inherit; width: auto;
+  }
+  .source-row { display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); }
+  .source-row:first-of-type { border-top: none; }
+  .source-icon { flex: none; width: 20px; text-align: center; margin-top: 2px; }
+  .source-part { font-weight: 600; }
+  .source-meta { color: var(--muted); font-size: 0.88rem; }
+  .source-note { font-size: 0.92rem; }
+  .why { color: var(--muted); }
+  .zoning-line { margin-top: 6px; font-size: 0.92rem; }
+  .zoning-line strong { font-weight: 700; }
+  .filtered-line { color: var(--muted); }
+  .popup-why { margin: 4px 0; font-size: 0.85rem; max-width: 240px; }
   .credits { text-align: center; font-size: 0.8rem; }
   .credits a { color: inherit; }
   [hidden] { display: none !important; }
@@ -350,10 +366,13 @@
         <div>
           <div class="tier" id="tier"></div>
           <div class="matched" id="matched"></div>
+          <button type="button" class="confidence-badge" id="confidence-badge"></button>
+          <div class="zoning-line" id="zoning-line" hidden></div>
         </div>
       </div>
       <div id="bars"></div>
     </div>
+    <div class="card" id="confidence-card"></div>
     <div class="card" id="details"></div>
     <div class="card save-card" id="save-card">
       <h2><i class="fa-solid fa-bookmark"></i> Save this search</h2>
@@ -718,13 +737,88 @@
     const section = el("details");
     section.appendChild(el("summary", title));
     const list = el("ul");
-    items.forEach(text => list.appendChild(el("li", text)));
+    items.forEach(item => {
+      if (typeof item === "string") { list.appendChild(el("li", item)); return; }
+      const li = el("li", null, item.className);
+      item.parts.forEach(([text, cls]) => li.appendChild(el("span", text, cls)));
+      list.appendChild(li);
+    });
     section.appendChild(list);
     if (note) section.appendChild(el("p", note, "note"));
     return section;
   }
 
+  const CONFIDENCE_COLORS = { High: "var(--strong)", Medium: "var(--moderate)", Low: "var(--weak)" };
+  const SOURCE_STATUS = {
+    live: ["fa-circle-check", "var(--strong)", "Loaded"],
+    limited: ["fa-circle-exclamation", "var(--moderate)", "Limited here"],
+    missing: ["fa-circle-xmark", "var(--weak)", "Missing"],
+    not_used: ["fa-circle-minus", "var(--muted)", "Not used in the score"],
+  };
+
+  function showConfidence(conf) {
+    const badge = $("confidence-badge");
+    const card = $("confidence-card");
+    card.replaceChildren();
+    if (!conf) { badge.hidden = true; card.hidden = true; return; }
+    badge.hidden = false; card.hidden = false;
+    badge.style.color = CONFIDENCE_COLORS[conf.level];
+    badge.replaceChildren();
+    const icon = el("i"); icon.className = "fa-solid fa-shield-halved";
+    badge.append(icon, document.createTextNode("Data confidence: " + conf.level));
+
+    const section = el("details");
+    section.id = "confidence-details";
+    section.appendChild(el("summary", "Data confidence: " + conf.level + ". Where this score's data comes from"));
+    section.appendChild(el("p", conf.summary, "note"));
+    conf.sources.forEach(src => {
+      const [iconName, color, statusText] = SOURCE_STATUS[src.status] || SOURCE_STATUS.live;
+      const row = el("div", null, "source-row");
+      const iconBox = el("div", null, "source-icon");
+      const i = el("i"); i.className = "fa-solid " + iconName; i.style.color = color; i.title = statusText;
+      iconBox.appendChild(i);
+      const body = el("div");
+      body.appendChild(el("div", src.part, "source-part"));
+      let asOf = src.as_of;
+      if (src.pulled_at) {
+        const when = new Date(src.pulled_at);
+        if (!isNaN(when)) asOf = "Pulled " + when.toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+      }
+      body.appendChild(el("div", src.source + " · " + asOf + " · " + statusText, "source-meta"));
+      if (src.note) body.appendChild(el("div", src.note, "source-note"));
+      row.append(iconBox, body);
+      section.appendChild(row);
+    });
+    card.appendChild(section);
+  }
+
+  $("confidence-badge").addEventListener("click", () => {
+    const section = $("confidence-details");
+    if (!section) return;
+    section.open = true;
+    section.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
+  const ZONING_STATUS = {
+    allowed: ["fa-circle-check", "var(--strong)", "Zoning allows it"],
+    check: ["fa-circle-exclamation", "var(--moderate)", "Check with the city"],
+    not_allowed: ["fa-circle-xmark", "var(--weak)", "Zoning likely doesn't allow it"],
+  };
+
+  function showZoning(z) {
+    const line = $("zoning-line");
+    line.replaceChildren();
+    line.hidden = !z || !z.available;
+    if (line.hidden) return;
+    const [iconName, color, text] = ZONING_STATUS[z.status];
+    const i = el("i"); i.className = "fa-solid " + iconName; i.style.color = color;
+    const strong = el("strong", " " + text + ": "); strong.style.color = color;
+    line.append(i, strong, document.createTextNode("zoned " + z.district + " (" + z.description + ")"));
+  }
+
   function showSiteResult(data) {
+    showConfidence(data.data_confidence);
+    showZoning(data.zoning);
     $("fit-score").textContent = data.fit_score;
     $("fit-score").style.color = colorFor(data.fit_score);
     $("tier").textContent = data.tier;
@@ -766,17 +860,40 @@
     ], "Based on Census data for this neighborhood (tract " + data.census_tract + ") compared with " + (d.state_name || "the state") + " as a whole."));
 
     const c = data.competition_details;
-    const competitorLines = c.nearest_competitors.length
-      ? c.nearest_competitors.map(p => p.name + " (" + p.distance_miles + " mi)")
-      : ["No competitors found on the map nearby"];
+    const counted = c.counted_competitors || c.nearest_competitors;
+    const SHOW_COMPETITORS = 10;
+    const competitorLines = counted.length
+      ? counted.slice(0, SHOW_COMPETITORS).map(p => ({ parts: [
+          [p.name + (p.chain && p.chain !== p.name ? " (" + p.chain + ")" : "") + ", " + p.distance_miles + " mi"],
+          p.counts_percent !== undefined ? [" · counts " + p.counts_percent + "%", "why"] : [""],
+        ] }))
+      : ["No competitors found on the map within the scoring area"];
+    const moreCompetitors = (c.openstreetmap_competitors_in_radius || 0) - Math.min(counted.length, SHOW_COMPETITORS);
+    if (moreCompetitors > 0) competitorLines.push("…and " + moreCompetitors + " more farther out (red pins on the map)");
+    (c.filtered_out || []).forEach(p => competitorLines.push({ className: "filtered-line", parts: [
+      ["Not counted: " + p.name + ", " + p.distance_miles + " mi. " + p.reason],
+    ] }));
     if (c.competitors_removed_by_you) {
       competitorLines.push("You removed " + c.competitors_removed_by_you + " competitor" +
                            (c.competitors_removed_by_you === 1 ? "" : "s") + " from this score (gray pins on the map)");
     }
     competitorLines.push("Census count in ZIP " + c.zip_code + ": " + num(c.census_competitors_in_zip) +
                          " (about " + num(c.census_estimate_in_radius) + " within the search area)");
+    let competitionNote = "";
+    if (c.why_competitors_count) {
+      competitionNote = "Why these count against you: each is " + c.why_competitors_count + ". " +
+        "Closer competitors count more: 100% right next door, fading to 0% at the edge of the " +
+        c.scoring_radius_miles + "-mile scoring area. Closed businesses and duplicate map listings are left out automatically. ";
+    }
     details.appendChild(detailSection("Competition: similar businesses nearby", competitorLines,
-      "Score based on: " + c.score_based_on + "."));
+      competitionNote + "Score based on: " + c.score_based_on + "."));
+
+    const z = data.zoning;
+    if (z) {
+      details.appendChild(z.available
+        ? detailSection("Zoning: " + z.district, [z.description, z.explanation], z.disclaimer + " Source: " + z.source + ". Zoning doesn't change the Fit Score.")
+        : detailSection("Zoning", ["Not available here"], z.reason));
+    }
 
     const cr = data.crime_details || {};
     if (cr.available) {
@@ -800,10 +917,27 @@
     t.busiest_roads_nearby.forEach(r => trafficLines.push("Nearby: " + roadLabel(r.road) + ", " + num(r.vehicles_per_day) + " vehicles/day"));
     details.appendChild(detailSection("Traffic & access", trafficLines, "2024 federal traffic counts. Highways are not counted."));
 
-    const counts = data.land_use_details.complementary_places_nearby;
-    const landLines = Object.keys(counts).length
-      ? Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, v]) => v + " " + k.replace("_", " "))
-      : ["See the note below"];
+    const lu = data.land_use_details;
+    const counts = lu.complementary_places_nearby;
+    let landLines;
+    if (lu.by_category && lu.by_category.length) {
+      landLines = lu.by_category.map(row => ({ parts: [
+        [row.count + " " + (row.count === 1 ? PLACE_SINGULAR[row.category] : PLACE_PLURALS[row.category] || row.category) + ": "],
+        [row.why + ({ 0.5: " (each counts half)", 2: " (each counts double)", 3: " (each counts triple)" }[row.weight] || ""), "why"],
+      ] }));
+      if (lu.top_contributors && lu.top_contributors.length) {
+        landLines.push("Adding the most: " + lu.top_contributors.slice(0, 5)
+          .map(p => (p.name === "(unnamed)" ? (PLACE_LABELS[p.category] || p.category) : p.name) + " (" + p.distance_miles + " mi)").join(", "));
+      }
+    } else {
+      landLines = Object.keys(counts).length
+        ? Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, v]) => v + " " + k.replace("_", " "))
+        : ["See the note below"];
+    }
+    if (lu.filtered_out_count) {
+      landLines.push({ className: "filtered-line", parts: [["Not counted: " + lu.filtered_out_count +
+        " closed or duplicate listing" + (lu.filtered_out_count === 1 ? "" : "s") + " (light gray pins on the map)"]] });
+    }
     const helpfulRemoved = data.land_use_details.helpful_removed_by_you;
     if (helpfulRemoved) {
       landLines.push("You removed " + helpfulRemoved + " business" + (helpfulRemoved === 1 ? "" : "es") +
@@ -837,6 +971,8 @@
   const COMPETITOR_PIN = "#d03b3b";   // red
   const SYNERGY_PIN = "#0ca30c";      // green
   const REMOVED_PIN = "#8a8f98";      // gray: businesses the visitor removed
+  const FILTERED_PIN = "#b9bec7";     // light gray: closed or duplicate listings, left out automatically
+  let competitorReason = "";          // "another café selling coffee…", for competitor popups
 
   // Businesses the visitor removed from the score (a competitor that isn't
   // one, or a neighbor that doesn't really bring customers), per business
@@ -855,6 +991,20 @@
     pharmacy: "Pharmacy", hospital: "Hospital", other_medical: "Medical office (dentist, therapy, etc.)",
     college: "College / university", school: "School", library: "Library", entertainment: "Theater / cinema",
     hotel: "Hotel", park: "Park", office: "Office", retail: "Shop",
+  };
+
+  const PLACE_PLURALS = {
+    cafe: "cafés", restaurant: "restaurants", bar: "bars", salon: "salons", clothing: "clothing, shoe and jewelry stores",
+    gym: "gyms", doctor: "doctor's offices", pharmacy: "pharmacies", hospital: "hospitals", other_medical: "other medical offices",
+    college: "colleges", school: "schools", library: "libraries", entertainment: "theaters and cinemas",
+    hotel: "hotels", park: "parks", office: "offices", retail: "shops",
+  };
+
+  const PLACE_SINGULAR = {
+    cafe: "café", restaurant: "restaurant", bar: "bar", salon: "salon", clothing: "clothing, shoe or jewelry store",
+    gym: "gym", doctor: "doctor's office", pharmacy: "pharmacy", hospital: "hospital", other_medical: "other medical office",
+    college: "college", school: "school", library: "library", entertainment: "theater or cinema",
+    hotel: "hotel", park: "park", office: "office", retail: "shop",
   };
 
   const PLACE_ICONS = {
@@ -888,14 +1038,19 @@
     const label = PLACE_LABELS[place.category] || place.category;
     box.appendChild(el("strong", place.name === "(unnamed)" ? label : place.name));
     box.appendChild(el("div", label));
-    const roleText = { competitor: "Competitor", synergy: "Brings customers", removed: "Removed by you, not counted" }[role];
+    const roleText = { competitor: "Competitor", synergy: "Brings customers", removed: "Removed by you, not counted",
+                       filtered: "Not counted (left out automatically)" }[role];
     const roleLine = el("div", roleText);
-    roleLine.style.color = { competitor: COMPETITOR_PIN, synergy: SYNERGY_PIN, removed: REMOVED_PIN }[role];
+    roleLine.style.color = { competitor: COMPETITOR_PIN, synergy: SYNERGY_PIN, removed: REMOVED_PIN, filtered: REMOVED_PIN }[role];
     roleLine.style.fontWeight = "600";
     box.appendChild(roleLine);
+    if (role === "synergy" && place.why) box.appendChild(el("div", "Why it helps: " + place.why, "popup-why"));
+    if (role === "competitor" && competitorReason) box.appendChild(el("div", "Why it counts: " + competitorReason, "popup-why"));
+    if (role === "filtered" && place.reason) box.appendChild(el("div", place.reason, "popup-why"));
+    if (place.chain && place.chain !== place.name) box.appendChild(el("div", "Chain: " + place.chain));
     if (place.address) box.appendChild(el("div", place.address));
     box.appendChild(el("div", place.distance_miles + " mi away"));
-    if (!place.counts_in_score && role !== "removed") {
+    if (!place.counts_in_score && role !== "removed" && role !== "filtered") {
       box.appendChild(el("div", "Outside the " + scoringRadius + "-mile scoring area, so not counted in the score", "note"));
     }
     if (role === "competitor" || role === "synergy") {
@@ -919,6 +1074,7 @@
       const rows = [[COMPETITOR_PIN, "Competitor (" + nearby.competitors.length + ")"],
                     [SYNERGY_PIN, "Brings customers (" + nearby.synergistic.length + ")"]];
       if (nearby.removed.length) rows.push([REMOVED_PIN, "Removed by you (" + nearby.removed.length + ")"]);
+      if (nearby.filtered && nearby.filtered.length) rows.push([FILTERED_PIN, "Closed or duplicate, not counted (" + nearby.filtered.length + ")"]);
       rows.forEach(([color, text]) => {
         const row = el("div", null, "legend-row");
         const dot = el("span", null, "pin-dot");
@@ -941,6 +1097,7 @@
   function drawNearbyBusinesses(data) {
     clearNearbyBusinesses();
     const nearby = data.nearby_businesses;
+    competitorReason = (data.competition_details && data.competition_details.why_competitors_count) || "";
     // interactive: false lets taps inside the circle reach the map (to score a new spot)
     L.circle([data.lat, data.lon], {
       radius: nearby.radius_miles * 1609, color: "#2f5bd3", weight: 2, fillOpacity: 0.04, interactive: false,
@@ -957,7 +1114,8 @@
     if (!nearby.available) return area;
 
     // Gray and green first, then red on top, so competitors are never hidden
-    [[nearby.removed, "removed", REMOVED_PIN, 100], [nearby.synergistic, "synergy", SYNERGY_PIN, 200],
+    [[nearby.filtered || [], "filtered", FILTERED_PIN, 50],
+     [nearby.removed, "removed", REMOVED_PIN, 100], [nearby.synergistic, "synergy", SYNERGY_PIN, 200],
      [nearby.competitors, "competitor", COMPETITOR_PIN, 300]].forEach(([places, role, color, layer]) => {
       places.forEach(place => {
         // a marker (not a map shape), so tapping it opens its details instead of scoring that spot
